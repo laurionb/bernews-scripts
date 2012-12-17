@@ -1,0 +1,34 @@
+#!/usr/bin/python
+import boto
+import os
+import string
+import sys
+
+cw = boto.connect_cloudwatch(os.environ['MY_ACCESS_KEY'], os.environ['MY_SECRET_KEY'])
+
+comp_map = { '>': 'GreaterThanThreshold', '<': 'LessThanThreshold', '<=': 'LessThanThreshold', '>=': 'GreaterThanOrEqualToThreshold' }
+
+for x in cw.describe_alarms():
+    command = 'mon-put-metric-alarm'
+    command += ' "' + x.name + '"'
+    command += ' --actions-enabled ' + x.actions_enabled
+    if len(x.alarm_actions) > 0:
+        command += ' --alarm-actions ' + string.join(x.alarm_actions, ',')
+    command += ' --alarm-description "' + x.description + '"'
+    command += ' --comparison-operator ' + comp_map[x.comparison]
+    command += ' --dimensions "' + string.join(['%s=%s' % (k,(v[0] if isinstance(v,list) else v)) for (k, v) in x.dimensions.iteritems()], ',') + '"'
+    command += ' --evaluation-periods ' + str(x.evaluation_periods)
+    if len(x.insufficient_data_actions) > 0:
+        command += ' --insufficient-data-actions ' + string.join(x.insufficient_data_actions, ',')
+    command += ' --metric-name ' + x.metric
+    command += ' --namespace ' + x.namespace
+    if len(x.ok_actions) > 0:
+        command += ' --ok_actions ' + string.join(x.ok_actions, ',')
+    command += ' --period ' + str(x.period)
+    command += ' --statistic ' + x.statistic
+    command += ' --threshold ' + str(x.threshold)
+    if None != x.unit:
+        command += ' --unit ' + x.unit
+    command += ' --access-key-id $MY_ACCESS_KEY --secret-key $MY_SECRET_KEY'
+    print command
+

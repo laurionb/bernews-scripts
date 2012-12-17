@@ -1,0 +1,23 @@
+#!/bin/bash
+max_attempts=10
+attempt=0
+timeout=1
+exit_code=0
+temp="/tmp/retry.$$"
+
+while [[ $attempt -lt $max_attempts ]]
+do
+    $* > $temp
+    exit_code=$?
+    if [[ 0 == $exit_code ]]
+    then
+        break
+    fi
+
+    echo "Failure ($exit_code)! Retrying in $timeout..." 1>&2
+    sleep $timeout
+    attempt=$(( attempt + 1 ))
+done
+
+cat $temp
+exit $exit_code

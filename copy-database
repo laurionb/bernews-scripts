@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+DATABASE=$1
+FROM_SERVER=$2
+RO_PASSWORD=$3
+TO_SERVER=$4
+RW_PASSWORD=$5
+
+# Backup the original database
+echo Copying ${DATABASE} from ${FROM_SERVER} to ${TO_SERVER}
+mysqldump --host=${FROM_SERVER} --user=rdsro --password=${RO_PASSWORD} --single-transaction ${DATABASE} |  mysql --host=${TO_SERVER} --user=rdsmaster --password=${RW_PASSWORD} ${DATABASE}

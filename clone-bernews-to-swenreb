@@ -1,0 +1,54 @@
+#!/bin/bash
+set -e
+
+KERNEL=aki-88aa75e1
+DATE=$(date '+%Y-%m-%d-%H%M%S')
+
+OLD_INSTANCE=`ec2-describe-instances --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY --filter 'tag:Name=swenreb' | grep INSTANCE | awk '{print $2}'`
+echo "Current swenreb instance is $OLD_INSTANCE"
+
+BERNEWS_VOLUME=`ec2-describe-volumes --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY --filter 'tag:Name=bernews' | grep VOLUME | awk '{print $2}'`
+echo "Creating swenreb from bernews volume $BERNEWS_VOLUME"
+
+SNAPSHOT=`ec2-create-snapshot --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY --description 'for swenreb creation' $BERNEWS_VOLUME | awk '{print $2}'`
+echo "Created snapshot $SNAPSHOT"
+ec2-create-tags $SNAPSHOT --tag Name=swenreb --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+ec2-create-tags $SNAPSHOT --tag Date=$DATE --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+echo "Tagged snapshot $SNAPSHOT"
+echo "Sleeping for 1 minute..."
+sleep 60
+
+AMI=`ec2-register --snapshot $SNAPSHOT --architecture x86_64 --name 'swenreb' --description 'for swenreb creation' --kernel $KERNEL --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY | awk '{print $2}'`
+echo "Created AMI $AMI with kernel $KERNEL"
+ec2-create-tags $AMI --tag Name=swenreb --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+ec2-create-tags $AMI --tag Date=$DATE --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+echo "Tagged AMI $AMI"
+
+INSTANCE=`ec2-run-instances $AMI --availability-zone us-east-1c --instance-count 1 --group wordpress --key bernews_us_east --kernel $KERNEL --instance-type t1.micro --disable-api-termination --user-data-file ../user-data/change-to-swenreb --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY | grep INSTANCE | awk '{print $2}'`
+echo "Created instance $INSTANCE with kernel $KERNEL"
+ec2-create-tags $INSTANCE --tag Name=swenreb --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+ec2-create-tags $INSTANCE --tag Date=$DATE --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+echo "Tagged instance $INSTANCE"
+echo "Sleeping for 3 minutes..."
+sleep 180
+
+VOLUME=`ec2-describe-volumes --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY --filter "attachment.instance-id=$INSTANCE" | grep VOLUME | awk '{print $2}'`
+echo "Instance $INSTANCE is using volume $VOLUME"
+ec2-create-tags $VOLUME --tag Name=swenreb --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+ec2-create-tags $VOLUME --tag Date=$DATE --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+echo "Tagged volume $VOLUME"
+
+ec2-deregister --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY $AMI > /dev/null
+echo "Deregistered AMI $AMI"
+
+ec2-delete-snapshot --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY $SNAPSHOT > /dev/null
+echo "Deleted snapshot $SNAPSHOT"
+
+ADDRESS=23.23.225.201
+ec2-associate-address --instance $INSTANCE $ADDRESS --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY > /dev/null
+echo "Associated EIP $ADDRESS with instance $INSTANCE"
+
+ec2-stop-instances --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY $OLD_INSTANCE > /dev/null
+echo "Stopped old swenreb instance ($OLD_INSTANCE)"
+
+echo "DONE"
