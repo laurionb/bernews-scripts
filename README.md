@@ -1,4 +1,0 @@
-bernews-scripts
-===============
-
-Bernews Scripts
