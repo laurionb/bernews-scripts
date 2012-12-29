@@ -176,7 +176,7 @@ then
 fi
 echo "Retrieved http://$SITE/" | tee --append $LOG
 
-# If the instance or olume doesn't have any alarms then grep won't find any
+# If the instance or volume doesn't have any alarms then grep won't find any
 # matching rows. We don't want execution to end then so we turn off pipefail.
 set +o pipefail
 retry cloudwatch-describe-alarms | grep $OLD_INSTANCE | sed s/$OLD_INSTANCE/$INSTANCE/g | tee --append $LOG | /bin/bash > /dev/null
