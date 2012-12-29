@@ -82,7 +82,7 @@ then
 fi
 echo "Current $NAME volume is $OLD_VOLUME" | tee --append $LOG
 
-SNAPSHOT=`retry ec2-describe-snapshots --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY --filter "tag:Name=$NAME" --filter "status=completed" | tee --append $LOG | awk '{print $5 "\t" $2}' | sort --reverse | head --lines=1 | awk '{print $2}'`
+SNAPSHOT=`retry ec2-describe-snapshots --aws-access-key $MY_ACCESS_KEY --aws-secret-key $MY_SECRET_KEY --filter "tag:Name=$NAME" --filter "status=completed" | grep SNAPSHOT | tee --append $LOG | awk '{print $5 "\t" $2}' | sort --reverse | head --lines=1 | awk '{print $2}'`
 if test -z "$SNAPSHOT"
 then
     echo "Could not find a snapshot of $NAME" | tee --append $LOG

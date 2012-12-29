@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# Copy a snapshot to another region
+if test -z "$1" || test -z "$2"
+then
+    echo "Usage: $0 [name] [region]"
+    exit 1
+fi
+
+KERNEL=aki-88aa75e1
+DATE=$(date '+%Y-%m-%d-%H%M%S')
+
+NAME=$1
+REGION=$2
+CLIENT_TOKEN="$DATE-$SITE-$$"
+
+SNAPSHOT=`ec2-describe-snapshots --filter "tag:Name=$NAME" --filter "status=completed" | grep SNAPSHOT | awk '{print $5 "\t" $2}' | sort --reverse | head --lines=1 | awk '{print $2}'`
+if test -z "$SNAPSHOT"
+then
+    echo "Could not find a snapshot of $NAME"
+    exit 1
+fi
+SNAPSHOT_DATE=`ec2-describe-tags --filter "resource-id=$SNAPSHOT" --filter "key=Date" | awk '{print $5}'`
+echo "Copying snapshot $SNAPSHOT from $SNAPSHOT_DATE to $REGION"
+
+set -e
+set -o pipefail
+
+COPY=`ec2-copy-snapshot --region $REGION --source-region us-east-1 --source-snapshot-id $SNAPSHOT | awk '{print $2}'`
+ec2-create-tags --region $REGION $COPY --tag Name=$NAME --tag Date=$SNAPSHOT_DATE --tag OriginalSnapshot=$SNAPSHOT --tag SourceRegion=us-east-1 --tag CopyDate=$DATE > /dev/null
+ec2-describe-snapshots --region $REGION $COPY
