@@ -99,13 +99,13 @@ set -o pipefail
 
 AMI=`retry ec2-register --snapshot $SNAPSHOT --architecture x86_64 --name "$NAME" --description restore-$NAME-from-latest-backup --kernel $KERNEL | tee --append $LOG | awk '{print $2}'`
 echo "Created AMI $AMI with kernel $KERNEL" | tee --append $LOG
-retry ec2-create-tags $AMI --tag Name=$NAME --tag Date=$DATE --tag SnapshotDate=$SNAPSHOT_DATE | tee --append $LOG > /dev/null
+retry ec2-create-tags $AMI --tag Name=$NAME --tag Date=$DATE --tag SnapshotDate=$SNAPSHOT_DATE --tag Kernel=$KERNEL | tee --append $LOG > /dev/null
 echo "Tagged AMI $AMI" | tee --append $LOG
 
 # Use a token to ensure idempotency on retry
 INSTANCE=`retry ec2-run-instances $AMI --client-token $CLIENT_TOKEN --availability-zone $AZ --instance-count 1 --group $SECURITY_GROUP --key $KEYPAIR --instance-type $INSTANCE_TYPE --kernel $KERNEL --disable-api-termination | tee --append $LOG | grep INSTANCE | awk '{print $2}'`
 echo "Created instance $INSTANCE with kernel $KERNEL" | tee --append $LOG
-retry ec2-create-tags $INSTANCE --tag Name=$NAME --tag Date=$DATE --tag Snapshot=$SNAPSHOT --tag SnapshotDate=$SNAPSHOT_DATE --tag OldInstance=$OLD_INSTANCE --tag OldVolume=$OLD_VOLUME | tee --append $LOG > /dev/null
+retry ec2-create-tags $INSTANCE --tag Name=$NAME --tag Date=$DATE --tag Kernel=$KERNEL --tag Snapshot=$SNAPSHOT --tag SnapshotDate=$SNAPSHOT_DATE --tag OldInstance=$OLD_INSTANCE --tag OldVolume=$OLD_VOLUME | tee --append $LOG > /dev/null
 echo "Tagged instance $INSTANCE" | tee --append $LOG
 
 retry ec2-monitor-instances $INSTANCE | tee --append $LOG > /dev/null
