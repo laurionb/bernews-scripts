@@ -4,7 +4,7 @@ import os
 import string
 import sys
 
-cw = boto.connect_cloudwatch(os.environ['MY_ACCESS_KEY'], os.environ['MY_SECRET_KEY'])
+cw = boto.connect_cloudwatch(os.environ['AWS_ACCESS_KEY'], os.environ['AWS_SECRET_KEY'])
 
 comp_map = { '>': 'GreaterThanThreshold', '<': 'LessThanThreshold', '<=': 'LessThanThreshold', '>=': 'GreaterThanOrEqualToThreshold' }
 
@@ -29,6 +29,6 @@ for x in cw.describe_alarms():
     command += ' --threshold ' + str(x.threshold)
     if None != x.unit:
         command += ' --unit ' + x.unit
-    command += ' --access-key-id $MY_ACCESS_KEY --secret-key $MY_SECRET_KEY'
+    command += ' --access-key-id $AWS_ACCESS_KEY --secret-key $AWS_SECRET_KEY'
     print command
 
