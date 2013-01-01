@@ -4,7 +4,10 @@ import os
 import string
 import sys
 
-cw = boto.connect_cloudwatch(os.environ['AWS_ACCESS_KEY'], os.environ['AWS_SECRET_KEY'])
+if (None <> os.environ.get('AWS_DELEGATION_TOKEN')):
+    cw = boto.connect_cloudwatch(os.environ['AWS_ACCESS_KEY'], os.environ['AWS_SECRET_KEY'], security_token = os.environ['AWS_DELEGATION_TOKEN'])
+else:
+    cw = boto.connect_cloudwatch(os.environ['AWS_ACCESS_KEY'], os.environ['AWS_SECRET_KEY'])
 
 comp_map = { '>': 'GreaterThanThreshold', '<': 'LessThanThreshold', '<=': 'LessThanThreshold', '>=': 'GreaterThanOrEqualToThreshold' }
 

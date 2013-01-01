@@ -8,6 +8,8 @@ then
     exit 1
 fi
 
+PATH=$PATH:.
+
 KERNEL=aki-88aa75e1
 DATE=$(date '+%Y-%m-%d-%H%M%S')
 
