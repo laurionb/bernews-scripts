@@ -180,12 +180,9 @@ echo "Retrieved http://$SITE/" | tee --append $LOG
 
 # If the instance or volume doesn't have any alarms then grep won't find any
 # matching rows. We don't want execution to end then so we turn off pipefail.
-set +o pipefail
-retry cloudwatch-describe-alarms | grep $OLD_INSTANCE | sed s/$OLD_INSTANCE/$INSTANCE/g | tee --append $LOG | /bin/bash > /dev/null
-echo "Created CloudWatch alarms for instance $INSTANCE" | tee --append $LOG
-retry cloudwatch-describe-alarms | grep $OLD_VOLUME | sed s/$OLD_VOLUME/$VOLUME/g | tee --append $LOG | /bin/bash > /dev/null
-echo "Created CloudWatch alarms for volume $VOLUME" | tee --append $LOG
-set -o pipefail
+retry update-cloudwatch-alarms $OLD_INSTANCE $INSTANCE | tee --append $LOG
+retry update-cloudwatch-alarms $OLD_VOLUME $VOLUME | tee --append $LOG
+echo "Updated CloudWatch alarms" | tee --append $LOG
 
 retry ec2-deregister $AMI | tee --append $LOG > /dev/null
 echo "Deregistered AMI $AMI" | tee --append $LOG

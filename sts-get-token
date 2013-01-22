@@ -1,19 +1,27 @@
 #!/usr/bin/python
 import boto
+import getpass
 import sys
 
-if (len(sys.argv) <> 5):
-    print 'Usage ' + sys.argv[0] + ' access_key secret_key mfa_serial_number mfa_token'
+if (len(sys.argv) <> 3):
+    print 'Usage ' + sys.argv[0] + ' access_key secret_key'
     exit(1)
 
 access_key = sys.argv[1]
 secret_key = sys.argv[2]
-mfa_serial_number = sys.argv[3]
-mfa_token = sys.argv[4]
+
+iam = boto.connect_iam(access_key, secret_key)
+response = iam.get_user()
+user = response['get_user_response']['get_user_result']['user']['user_name']
+response = iam.get_all_mfa_devices(user)
+mfa_serial_number = response['list_mfa_devices_response']['list_mfa_devices_result']['mfa_devices'][0]['serial_number']
+
+print 'Enter the MFA token for MFA device ' + mfa_serial_number + ' (user: ' + user + ')'
+mfa_token = getpass.getpass()
 
 sts = boto.connect_sts(access_key, secret_key)
-
 token = sts.get_session_token(duration = 3600, force_new = True, mfa_serial_number = mfa_serial_number, mfa_token = mfa_token)
+
 print 'export AWS_ACCESS_KEY=' + token.access_key
 print 'export AWS_SECRET_KEY=' + token.secret_key
 print 'export AWS_DELEGATION_TOKEN=' + token.session_token

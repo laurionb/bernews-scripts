@@ -27,6 +27,5 @@ def update_dimensions(dimensions, old, new):
 
 for x in cw.describe_alarms():
     if update_dimensions(x.dimensions, old, new):
-        print x
-        print x.dimensions
-
+        print 'Updating %s (%s}' % (x, x.dimensions)
+        cw.create_alarm(x)
