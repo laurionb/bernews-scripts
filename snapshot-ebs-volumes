@@ -22,6 +22,7 @@ def connect_to_aws(f):
 def main(args):
     type = args[1] # type of snapshot (e.g. 'daily')
     keep = args[2] # number of snapshots to keep (e.g. 7)
+    os.system('/bin/sync')
     instance_id = get_instance_id()
     ec2 = connect_to_aws(boto.connect_ec2)
     print 'making backup of type %s, keeping %s for instance %s' % (type, keep, instance_id)
