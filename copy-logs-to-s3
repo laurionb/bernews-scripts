@@ -1,0 +1,4 @@
+#!/bin/bash
+. $HOME/.bashrc
+s3cmd sync --no-check-md5 --no-delete-removed --exclude=\* '--rinclude=^access_log-.*.gz' /var/log/httpd/ s3://com.bernews.logs/$NAME/
+
