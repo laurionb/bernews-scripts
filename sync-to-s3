@@ -1,0 +1,4 @@
+#!/bin/bash
+INSTANCE_ID=$(ec2-metadata -i | cut -d ' ' -f2)
+NAME=$(ec2-describe-tags --filter "resource-type=instance" --filter "resource-id=$INSTANCE_ID" --filter "key=Name" | cut -f5)
+/bin/nice -n 19 /usr/bin/ionice -c 3 s3cmd sync --no-check-md5 --delete-removed /var/www/html/ s3://com.bernews.backup/$NAME/html/
