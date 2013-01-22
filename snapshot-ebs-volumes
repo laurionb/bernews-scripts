@@ -36,7 +36,7 @@ def main(args):
          print 'creating snapshot \'%s\'' % snapshot_description
          snapshot = ec2.create_snapshot(v.id, snapshot_description)
          print 'created snapshot %s' % snapshot.id
-         ec2.create_tags(snapshot.id, {'Name': volume_name, 'Instance': instance, 'Date': time, 'Type': type, 'Volume': v.id})
+         ec2.create_tags(snapshot.id, {'Name': volume_name, 'Instance': instance_id, 'Date': time, 'Type': type, 'Volume': v.id})
          sorted(old_snapshots, key=attrgetter('start_time'))
          to_delete = len(old_snapshots) - int(keep)
          for i in range(to_delete):
