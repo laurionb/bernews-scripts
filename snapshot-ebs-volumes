@@ -1,0 +1,47 @@
+#!/usr/bin/python
+import boto
+import os
+import sys
+import urllib2
+
+from datetime import datetime
+from operator import attrgetter
+
+def get_instance_id():
+    return urllib2.urlopen('http://169.254.169.254/latest/meta-data/instance-id').read()
+
+"""Call a boto connection function using the AWS environment variables. This supports both
+ordinary and delegated credentials"""
+def connect_to_aws(f):
+    if (None <> os.environ.get('AWS_DELEGATION_TOKEN')):
+        return f(os.environ['AWS_ACCESS_KEY'], os.environ['AWS_SECRET_KEY'], security_token = os.environ['AWS_DELEGATION_TOKEN'])
+    else:
+        return f(os.environ['AWS_ACCESS_KEY'], os.environ['AWS_SECRET_KEY'])
+
+
+def main(args):
+    type = args[1] # type of snapshot (e.g. 'daily')
+    keep = args[2] # number of snapshots to keep (e.g. 7)
+    instance_id = get_instance_id()
+    ec2 = connect_to_aws(boto.connect_ec2)
+    print 'making backup of type %s, keeping %s for instance %s' % (type, keep, instance_id)
+    volumes = ec2.get_all_volumes(filters={'attachment.instance-id': instance_id})
+    for v in volumes:
+         print 'volume %s is attached' % v.id
+         # Get the existing snapshots before we create the new one
+         old_snapshots = ec2.get_all_snapshots(filters={'volume-id': v.id, 'tag:Type': type})
+         volume_name = ec2.get_all_tags(filters={'resource-id': v.id, 'key': 'Name'})[0].value
+         time = datetime.utcnow().isoformat()
+         snapshot_description = '%s %s (%s)' % (volume_name, time, type)
+         print 'creating snapshot \'%s\'' % snapshot_description
+         snapshot = ec2.create_snapshot(v.id, snapshot_description)
+         print 'created snapshot %s' % snapshot.id
+         ec2.create_tags(snapshot.id, {'Name': volume_name, 'Instance': instance, 'Date': time, 'Type': type, 'Volume': v.id})
+         sorted(old_snapshots, key=attrgetter('start_time'))
+         to_delete = len(old_snapshots) - int(keep)
+         for i in range(to_delete):
+             print 'deleting snapshot %s \'%s\'' % (old_snapshots[i].id, old_snapshots[i].description)
+             old_snapshots[i].delete()
+
+if __name__ == "__main__":
+    main(sys.argv)
