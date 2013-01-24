@@ -28,4 +28,5 @@ def update_dimensions(dimensions, old, new):
 for x in cw.describe_alarms():
     if update_dimensions(x.dimensions, old, new):
         print 'Updating %s (%s}' % (x, x.dimensions)
+        x.comparison = comp_map[x.comparison]
         cw.create_alarm(x)
