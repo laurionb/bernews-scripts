@@ -1,192 +1,386 @@
-#!/bin/bash
-#
-# Restores the latest backup and moves the EIP over to the new machine.
-# This depends on the external cloudwatch-describe-alarms and retry scripts.
-if test -z "$1" || test -z "$2" || test -z "$3"
-then
-    echo "Usage: $0 [site] [instance-type] [az]"
-    exit 1
-fi
+#!/usr/bin/python
+import argparse
+import boto
+import getpass
+import logging
+import os
+import socket
+import sys
+import time
+import urllib2
 
-PATH=$PATH:.
+from boto.ec2.blockdevicemapping import EBSBlockDeviceType, BlockDeviceMapping
+from datetime import datetime
+from operator import attrgetter
 
-KERNEL=aki-88aa75e1
-DATE=$(date '+%Y-%m-%d-%H%M%S')
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# format with the time
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+# log to a file
+fh = logging.FileHandler('aws.log')
+fh.setLevel(logging.DEBUG)
+fh.setFormatter(formatter)
+logger.addHandler(fh)
+# also log boto errors to the file
+logging.getLogger('boto').addHandler(fh)
 
-LOG=/tmp/restore-from-backup.log
+"""Prints a string to the console and logs it"""
+def print_and_log(s):
+    print s
+    logger.info(s)
 
-SITE=$1
-INSTANCE_TYPE=$2
-AZ=$3
-CLIENT_TOKEN="$DATE-$SITE-$$"
-echo "Logging to $LOG"
-echo "$0 $*" > $LOG
-date >> $LOG
-echo "Restoring latest $SITE backup" | tee --append $LOG
-echo "    availability-zone: $AZ" | tee --append $LOG
-echo "        instance-type: $INSTANCE_TYPE" | tee --append $LOG 
-echo "               kernel: $KERNEL" | tee --append $LOG 
-echo "                 date: $DATE" | tee --append $LOG 
-echo "         client token: $CLIENT_TOKEN" | tee --append $LOG
+"""Prints a string to the console and logs it"""
+def print_error_and_log(s):
+    print 'ERROR: ' + s
+    logger.error(s)
+    
+"""Call a function, retrying on failures"""
+def retry(f, retries=60):
+    failures = 0
+    while True:
+        try:
+            result = f()            
+            return result
+        except Exception as e:
+            failures = failures + 1
+            if failures > retries:
+                print_and_log('Failed after {0} retries'.format(failures))
+                logger.error('Failed after {0} retries with exception {1}'.format(failures, e))
+                raise         
+            logger.warning('Got exception {0} ({1} failures total). Retrying...'.format(e.__class__.__name__, failures))
+            time.sleep(2)
 
-retry ec2-describe-availability-zones --filter zone-name=$AZ | grep AVAILABILITYZONE > /dev/null
-if [ $? -ne 0 ]
-then
-    echo "Availability-zone $AZ doesn't exist"
-    exit 1
-fi
+def get_url(url):
+    logger.debug('Getting {0}'.format(url))
+    data = retry(lambda: urllib2.urlopen(url, timeout=10).read(), retries=120)
+    print_and_log('Got {0} bytes of data from {1}'.format(len(data), url))
+            
+"""Call a boto connection function using the AWS environment variables. This supports both
+ordinary and delegated credentials"""
+def connect_to_aws(f, creds):
+    if ('AWS_DELEGATION_TOKEN' in creds):
+        return f(creds['AWS_ACCESS_KEY'], creds['AWS_SECRET_KEY'], security_token = creds['AWS_DELEGATION_TOKEN'])
+    else:
+        return f(creds['AWS_ACCESS_KEY'], creds['AWS_SECRET_KEY'])
 
-ADDRESS=`retry host -t A $SITE | tee --append $LOG | awk '{print $4}'`
-if test -z "$ADDRESS"
-then
-    echo "Could not find IP address for $SITE" | tee --append $LOG
-    exit 1
-fi
-echo "$SITE has IP address $ADDRESS" | tee --append $LOG
+"""Get temporary AWS credentials"""
+def get_aws_credentials(access_key, secret_key):
+    iam = boto.connect_iam(access_key, secret_key)
+    user = retry(lambda: iam.get_user(), 2)['get_user_response']['get_user_result']['user']['user_name']
+    mfa_serial_number = retry(lambda: iam.get_all_mfa_devices(user))['list_mfa_devices_response']['list_mfa_devices_result']['mfa_devices'][0]['serial_number']
+    print 'Enter the MFA token for MFA device {0} (user: {1})'.format(mfa_serial_number, user) # just print to the console, no logging
+    mfa_token = getpass.getpass('Token: ')
+    sts = boto.connect_sts(access_key, secret_key)
+    token = retry(lambda: sts.get_session_token(duration = 3600, force_new = True, mfa_serial_number = mfa_serial_number, mfa_token = mfa_token), 2)
+    creds = {'AWS_ACCESS_KEY': token.access_key, 'AWS_SECRET_KEY': token.secret_key, 'AWS_DELEGATION_TOKEN': token.session_token}
+    return creds
 
-OLD_INSTANCE=`retry ec2-describe-addresses --filter public-ip=$ADDRESS | tee --append $LOG | awk '{print $3}'`
-if test -z "$OLD_INSTANCE"
-then
-    echo "Could not find instance associated with address $ADDRESS" | tee --append $LOG
-    exit 1
-fi
-echo "Current $SITE instance is $OLD_INSTANCE" | tee --append $LOG
+"""Parse the commandline"""
+def parse_commandline():
+    parser = argparse.ArgumentParser(description='Clone an EC2 machine from its most recent backup.')
+    parser.add_argument('--aws-access-key', metavar='KEY', help='AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).')
+    parser.add_argument('--aws-secret-key', metavar='KEY', help='AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).')
+    parser.add_argument('--availability-zone', metavar='ZONE', help='Specifies the availability zone to launch the new instance in. Defaults to the same availability zone as the current instance.')
+    parser.add_argument('--instance-type', metavar='TYPE', help='The type of instance to create. Defaults to the same type as the current instance.')
+    parser.add_argument('--kernel', help='Specifies the ID of the kernel to launch the new instance with. Defaults to the same kernel as the current instance.')
+    parser.add_argument('--key', metavar='KEYPAIR', dest='key_name', help='Specifies the name of the key pair to use when launching the new instance. Defaults to the same key pair as the current instance.')
+    parser.add_argument('--group', metavar='GROUP', dest='security_group', help='Specifies the security group within which the new instance should be run. Defaults to the same security group as the current instance.')
+    parser.add_argument('--verbose', action='store_true', help='Turns on verbose logging.')    
+    parser.add_argument('host', help='The DNS name of the instance to restore')
+    args = parser.parse_args()
+    logger.info(args)
+    return args
+    
+"""Get environment variables that can be used to fill in missing arguments"""    
+def get_env_vars(args):
+    if (None == args.aws_access_key):
+        if ('AWS_ACCESS_KEY' in os.environ):
+            args.aws_access_key = os.environ['AWS_ACCESS_KEY']
+        else:
+            sys.exit('AWS Access Key ID not specified')
+    if (None == args.aws_secret_key):
+        if ('AWS_SECRET_KEY' in os.environ):
+            args.aws_secret_key = os.environ['AWS_SECRET_KEY']
+        else:
+            sys.exit('AWS Secret Access Key not specified')
+    return args
+    
+"""Turn a hostname into an IP address"""
+def get_ip_address(hostname):
+    ip_address = retry(lambda: socket.gethostbyname(hostname))
+    logger.debug('{0} has IP address {1}'.format(hostname, ip_address))
+    return ip_address
 
-NAME=`retry ec2-describe-tags --filter resource-id=$OLD_INSTANCE --filter key=Name | tee --append $LOG | awk '{print $5}'`
-if test -z "$NAME"
-then
-    echo "Unable to determine name of instance $OLD_INSTANCE" | tee --append $LOG
-    exit 1
-fi
-echo "Instance $OLD_INSTANCE is named $NAME" | tee --append $LOG
+"""Validate the arguments that will be used to launch a new instance"""    
+def validate_args(ec2, args):
+    try:
+        z = retry(lambda: ec2.get_all_zones([args.availability_zone]))[0]
+        print_and_log('    Availability zone {0} is {1}'.format(z.name, z.state))
+    except:
+        print_error_and_log('Availability zone {0} not found'.format(args.availability_zone))
+        raise
+    try:
+        retry(lambda: ec2.get_all_key_pairs([args.key_name]))
+        print_and_log('    Found key pair {0}'.format(args.key_name))
+    except:
+        print_error_and_log('Key pair {0} not found'.format(args.key_name))
+        raise
+    try:
+        retry(lambda: ec2.get_all_kernels([args.kernel]))
+        print_and_log('    Found kernel {0}'.format(args.kernel))
+    except:
+        print_error_and_log('Kernel {0} not found'.format(args.kernel))
+        raise
+    try:
+        # To see if an instance type exists we'll look to see if there are reserved
+        # instances of that type
+        retry(lambda: ec2.get_all_reserved_instances_offerings(instance_type = args.instance_type))
+        print_and_log('    Found instance type {0}'.format(args.instance_type))
+    except:
+        print_error_and_log('Instance type {0} not found'.format(args.instance_type))
+        raise
+    try:
+        retry(lambda: ec2.get_all_security_groups([args.security_group]))
+        print_and_log('    Found security group {0}'.format(args.security_group))
+    except:
+        print_error_and_log('Security group {0} not found'.format(args.security_group))
+        raise
 
-KEYPAIR=`retry ec2-describe-instances --filter "instance-id=$OLD_INSTANCE" | tee --append $LOG | grep INSTANCE | awk '{print $7}'`
-if test -z "$KEYPAIR"
-then
-    echo "Could not find keypair for instance $INSTANCE" | tee --append $LOG
-    exit 1
-fi
-echo "Instance $OLD_INSTANCE is using keypair $KEYPAIR" | tee --append $LOG
+def update_cloudwatch_dimensions(dimensions, old, new):
+    for (k, v) in dimensions.items():
+        if isinstance(v,list):
+            if -1 != string.find(v[0], old):
+                dimensions[k][0] = string.replace(v[0], old, new)
+                return True
+        elif -1 != string.find(v, old):
+                dimensions[k] = string.replace(v, old, new)
+                return True
+    return False
+        
+"""Update CloudWatch alarms, updating the dimensions"""
+def update_cloudwatch_alarms(cw, old, new):
+    comp_map = { '>': 'GreaterThanThreshold', '<': 'LessThanThreshold', '<=': 'LessThanThreshold', '>=': 'GreaterThanOrEqualToThreshold' }
+    for alarm in retry(lambda: cw.describe_alarms()):
+        alarm.comparison = comp_map[alarm.comparison]
+        logger.debug(alarm)
+        if update_dimensions(alarm.dimensions, old, new):
+            print_and_log('updating {0} ({1}}'.format(alarm, alarm.dimensions))
+            logger.debug(alarm)
+            retry(lambda: cw.create_alarm(alarm))
 
-SECURITY_GROUP=`retry ec2-describe-instances --filter "instance-id=$OLD_INSTANCE" | tee --append $LOG | grep RESERVATION | awk '{print $4}'`
-if test -z "$SECURITY_GROUP"
-then
-    echo "Could not find security group for instance $INSTANCE" | tee --append $LOG
-    exit 1
-fi
-echo "Instance $OLD_INSTANCE is in security group $SECURITY_GROUP" | tee --append $LOG
+"""Tag a resource"""            
+def tag_resource(ec2, resource_id, tags):
+    logger.debug('Tagging {0} with {1}'.format(resource_id, tags))
+    retry(lambda: ec2.create_tags([resource_id], tags))
+    logger.debug('Tagged {0} with {1}'.format(resource_id, tags))
 
-OLD_VOLUME=`retry ec2-describe-volumes --filter "attachment.instance-id=$OLD_INSTANCE" | tee --append $LOG | grep VOLUME | awk '{print $2}'`
-if test -z "$OLD_VOLUME"
-then
-    echo "Could not find volume for instance $OLD_INSTANCE" | tee --append $LOG
-    exit 1
-fi
-echo "Current $NAME volume is $OLD_VOLUME" | tee --append $LOG
+"""Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
+def prompt(p):
+    i = raw_input('### ' + p + '. Press ENTER to continue. ### ').lower()
+    if str.startswith(i, 'q') or str.startswith(i, 'n'):
+        raise Exception('Cancelled')
+    
+def main():
+    date = datetime.utcnow().isoformat()
 
-SNAPSHOT=`retry ec2-describe-snapshots --filter "tag:Name=$NAME" --filter "status=completed" | grep SNAPSHOT | tee --append $LOG | awk '{print $5 "\t" $2}' | sort --reverse | head --lines=1 | awk '{print $2}'`
-if test -z "$SNAPSHOT"
-then
-    echo "Could not find a snapshot of $NAME" | tee --append $LOG
-    exit 1
-fi
-SNAPSHOT_DATE=`retry ec2-describe-tags --filter "resource-id=$SNAPSHOT" --filter "key=Date" | tee --append $LOG | awk '{print $5}'`
-echo "Using snapshot $SNAPSHOT from $SNAPSHOT_DATE" | tee --append $LOG
+    args = parse_commandline()
+    
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger('boto').setLevel(logging.INFO)
+        logger.debug('Verbose logging enabled')
+    
+    args = get_env_vars(args)            
+        
+    credentials = get_aws_credentials(args.aws_access_key, args.aws_secret_key)
 
-read -t 60 -p "Ready to begin. Hit ENTER or wait 60 seconds... "
+    print_and_log('*** Restoring latest backup of {0}:'.format(args.host))
+    
+    # Get the IP address of the host we are going to restore
+    ip_address = get_ip_address(args.host)
+    print_and_log('                  EIP: {0}'.format(ip_address))
+    
+    # Find the EIP for that address
+    ec2 = connect_to_aws(boto.connect_ec2, credentials)
+    eip = retry(lambda: ec2.get_all_addresses(filters={'public-ip': ip_address}))[0]
+    old_instance_id = eip.instance_id
+    print_and_log('             Instance: {0}'.format(old_instance_id))
 
-# At this point we turn on error checking for ALL commands
-set -e
-set -o pipefail
+    # Get information about the instance
+    instance_name = retry(lambda: ec2.get_all_tags(filters={'resource-id': old_instance_id, 'key': 'Name'}))[0].value
+    print_and_log('                 Name: {0}'.format(instance_name))
+    
+    old_instance = retry(lambda: ec2.get_all_instances(old_instance_id))[0].instances[0]
+    print_and_log('                State: {0}'.format(old_instance.state))
+    print_and_log('        Instance type: {0}'.format(old_instance.instance_type))
+    print_and_log('    Availability Zone: {0}'.format(old_instance.placement))
+    print_and_log('               Kernel: {0}'.format(old_instance.kernel))
+    print_and_log('       Security group: {0}'.format(old_instance.groups[0].name))
+    print_and_log('              SSH Key: {0}'.format(old_instance.key_name))
+    
+    old_volume = retry(lambda: ec2.get_all_volumes(filters={'attachment.instance-id': old_instance_id}))[0]
+    print_and_log('               Volume: {0}'.format(old_volume.id))
 
-AMI=`retry ec2-register --snapshot $SNAPSHOT --architecture x86_64 --name "$NAME" --description restore-$NAME-from-latest-backup --kernel $KERNEL | tee --append $LOG | awk '{print $2}'`
-echo "Created AMI $AMI with kernel $KERNEL" | tee --append $LOG
-retry ec2-create-tags $AMI --tag Name=$NAME --tag Date=$DATE --tag SnapshotDate=$SNAPSHOT_DATE --tag Kernel=$KERNEL | tee --append $LOG > /dev/null
-echo "Tagged AMI $AMI" | tee --append $LOG
+    # Find the snapshot to restore 
+    print ''
+    print_and_log('*** Latest backup:')
+    snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': instance_name, 'status': 'completed'}))
+    snapshots = sorted(snapshots, key=attrgetter('start_time'), reverse=True)
+    logger.debug(snapshots)
+    snapshot = snapshots[0]
+    print_and_log('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
+    
+    snapshot_date = retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id, 'key': 'Date'}))[0].value 
+    print_and_log('        Snapshot date: {0}'.format(snapshot_date))
 
-# Use a token to ensure idempotency on retry
-INSTANCE=`retry ec2-run-instances $AMI --client-token $CLIENT_TOKEN --availability-zone $AZ --instance-count 1 --group $SECURITY_GROUP --key $KEYPAIR --instance-type $INSTANCE_TYPE --kernel $KERNEL --disable-api-termination | tee --append $LOG | grep INSTANCE | awk '{print $2}'`
-echo "Created instance $INSTANCE with kernel $KERNEL" | tee --append $LOG
-retry ec2-create-tags $INSTANCE --tag Name=$NAME --tag Date=$DATE --tag Kernel=$KERNEL --tag Snapshot=$SNAPSHOT --tag SnapshotDate=$SNAPSHOT_DATE --tag OldInstance=$OLD_INSTANCE --tag OldVolume=$OLD_VOLUME | tee --append $LOG > /dev/null
-echo "Tagged instance $INSTANCE" | tee --append $LOG
+    # Get the default arguments
+    logger.debug('args before defaults applied: {0}'.format(args))
+    args.instance_type = args.instance_type or old_instance.instance_type
+    args.availability_zone = args.availability_zone or old_instance.placement
+    args.kernel = args.kernel or old_instance.kernel
+    args.key_name = args.key_name or old_instance.key_name
+    args.security_group = args.security_group or old_instance.groups[0].name
+    logger.debug('args after defaults applied: {0}'.format(args))
 
-retry ec2-monitor-instances $INSTANCE | tee --append $LOG > /dev/null
-echo "Enabled detailed monitoring for instance $INSTANCE" | tee --append $LOG
+    # Launch parameters
+    print ''
+    print_and_log('*** Launch parameters:')
+    print_and_log('        Instance type: {0}'.format(args.instance_type))
+    print_and_log('    Availability Zone: {0}'.format(args.availability_zone))
+    print_and_log('               Kernel: {0}'.format(args.kernel))
+    print_and_log('              SSH Key: {0}'.format(args.key_name))
+    print_and_log('       Security Group: {0}'.format(args.security_group))
+    print_and_log('         Client token: {0}'.format(args.security_group))
+    
+    
+    # Validate launch parameters
+    print ''
+    print_and_log('*** Validating launch parameters...')
+    validate_args(ec2, args)
 
-echo "Sleeping for 30 seconds..."
-sleep 30
+    # Tags to apply to new resources
+    tags = {'Name': instance_name, 'Date': date, 'Kernel': args.kernel, 'Snapshot': snapshot.id, 'SnapshotDate': snapshot_date, 'OldInstance': old_instance.id, 'OldVolume': old_volume.id}
+    # Tags to apply to retired resources
+    retired_tags = {'Name': instance_name + '-retired', 'RetiredDate': date}
+    
+    # Ready to start
+    print ''
+    prompt('Ready to start')
+    
+    ami = None
+    instance = None
+    
+    # Create the backup image. If anything fails here we will cleanup
+    try:    
+        # AMI
+        logger.debug('Registering the AMI')
+        ebs = EBSBlockDeviceType()
+        ebs.snapshot_id = snapshot.id
+        ebs.delete_on_termination = True
+        block_map = BlockDeviceMapping()
+        block_map['/dev/sda1'] = ebs
+        logger.debug(block_map)
+        ami = retry(lambda: ec2.register_image(
+            '{0}-{1}'.format(instance_name, snapshot.id),
+            'restore-{0}-from-backup-{1}'.format(instance_name, snapshot.id),
+            architecture='x86_64',
+            kernel_id=args.kernel,
+            root_device_name='/dev/sda1',
+            block_device_map=block_map))
+        print_and_log('                  AMI: {0}'.format(ami))
+        tag_resource(ec2, ami, tags)
+                
+        # Instance
+        logger.debug('Starting the instance')
+        client_token = 'run-{0}-{1}'.format(ami, instance_name)
+        logger.debug('Client token: \'{0}\''.format(client_token))    
+        reservation = retry(lambda: ec2.run_instances(
+            ami,
+            key_name=args.key_name,
+            security_groups=[args.security_group],
+            instance_type=args.instance_type,
+            placement=args.availability_zone,
+            kernel_id=args.kernel,
+            monitoring_enabled=True,
+            client_token=client_token))
+        instance = reservation.instances[0]
+        print_and_log('             Instance: {0}'.format(instance.id))
+        print_and_log('                State: {0}'.format(instance.state))
+        print_and_log('        Instance type: {0}'.format(instance.instance_type))
+        print_and_log('    Availability Zone: {0}'.format(instance.placement))
+        print_and_log('               Kernel: {0}'.format(instance.kernel))
+        print_and_log('       Security group: {0}'.format(instance.groups[0].name))
+        print_and_log('              SSH Key: {0}'.format(instance.key_name))
+        tag_resource(ec2, instance.id, tags)
+        retired_tags['NewInstance'] = instance.id
 
-VOLUME=`retry ec2-describe-volumes --filter "attachment.instance-id=$INSTANCE" | tee --append $LOG | grep VOLUME | awk '{print $2}'`
-echo "Instance $INSTANCE is using volume $VOLUME" | tee --append $LOG
-retry ec2-create-tags $VOLUME --tag Name=$NAME --tag Date=$DATE --tag SnapshotDate=$SNAPSHOT_DATE --tag OldVolume=$OLD_VOLUME | tee --append $LOG > /dev/null
-echo "Tagged volume $VOLUME" | tee --append $LOG
+        print_and_log('Waiting for instance...')
+        while 'pending' == instance.state:
+            logger.debug('Instance {0} has state {1}. Sleeping'.format(instance.id, instance.state))
+            time.sleep(2)
+            retry(lambda: instance.update(True))
+        print_and_log('                State: {0}'.format(instance.state))
+        print_and_log('           Public DNS: {0}'.format(instance.public_dns_name))
+        print_and_log('          Private DNS: {0}'.format(instance.private_dns_name))
+        
+        logger.debug('Getting instance volume')
+        volume = retry(lambda: ec2.get_all_volumes(filters={'attachment.instance-id': instance.id}))[0]
+        print_and_log('               Volume: {0}'.format(old_volume.id))
 
-EC2_CNAME=`retry ec2-describe-instances --filter instance-id=$INSTANCE | tee --append $LOG | grep INSTANCE | awk '{print $4}'`
-echo "Instance name is $EC2_CNAME" | tee --append $LOG
+        tag_resource(ec2, volume.id, tags)
+        retired_tags['NewVolume'] = volume.id
+                
+        print_and_log('Checking {0}'.format(instance.public_dns_name))
+        get_url('http://{0}/'.format(instance.public_dns_name))
 
-wget --tries=25 --retry-connrefused --append-output=$LOG --output-document=/dev/null http://$EC2_CNAME/ > /dev/null
-if [ $? -ne 0 ]
-then
-    echo "Unable to access http://$EC2_CNAME/" | tee --append $LOG
-    exit 1
-fi
-echo "Retrieved http://$EC2_CNAME/" | tee --append $LOG
+        print ''
+        prompt('Ready to move EIP {0} ({1}) to instance {2}'.format(ip_address, args.host, instance.public_dns_name))
 
-read -p "$SITE: Ready to move EIP $ADDRESS to instance $EC2_CNAME. Hit ENTER... "
+        print_and_log('Disabling API termination')
+        retry(lambda: ec2.modify_instance_attribute(instance.id, 'disableApiTermination ', True)
+        
+    except:
+        print_error_and_log('Caught an exception, cleaning up...')
+        if instance:
+            logger.info('Terminating {0}'.format(instance))
+            retry(lambda: ec2.terminate_instances([instance.id]))
+        raise
+    finally:
+        # We always want to get rid of the AMI
+        if ami:
+            logger.info('Deregistering {0}'.format(ami))
+            retry(lambda: ec2.deregister_image(ami))
+    
+    # At this point the new instance is running and available. Time to move the EIP over
+    print_and_log('Moving EIP')
+    retry(lambda: ec2.associate_address(instance_id=instance.id, public_ip=ip_address))
 
-retry ec2-associate-address --instance $INSTANCE $ADDRESS | tee --append $LOG > /dev/null
-echo "Associated EIP $ADDRESS with instance $INSTANCE" | tee --append $LOG
+    # Check the host now works
+    print_and_log('Checking {0}'.format(ip_address))
+    get_url('http://{0}/'.format(ip_address))
+    print_and_log('Checking {0}'.format(args.host))
+    get_url('http://{0}/'.format(args.host))
 
-wget --tries=25 --retry-connrefused --append-output=$LOG --output-document=/dev/null http://$ADDRESS/ > /dev/null
-if [ $? -ne 0 ]
-then
-    echo "Unable to access http://$ADDRESS/" | tee --append $LOG
-    exit 1
-fi
-echo "Retrieved http://$ADDRESS/" | tee --append $LOG
+    # Move the CloudWatch alarms over
+    print_and_log('Updating CloudWatch alarms')
+    cw = connect_to_aws(boto.connect_cloudwatch, credentials)    
+    update_cloudwatch_alarms(cw, old_instance.id, instance.id)
+    update_cloudwatch_alarms(cw, old_volume.id, volume.id)
+    
+    # Tag the old host
+    tag_resource(old_instance.id, retired_tags)
+    tag_resource(old_volume.id, retired_tags)
+    
+    # Shutdown the old host
+    print_and_log('Stopping old instance')
+    retry(lambda: ec2.stop_instances([old_instance.id], force=True))
 
-wget --tries=25 --retry-connrefused --append-output=$LOG --output-document=/dev/null http://$SITE/ > /dev/null
-if [ $? -ne 0 ]
-then
-    echo "Unable to access http://$SITE/" | tee --append $LOG
-    exit 1
-fi
-echo "Retrieved http://$SITE/" | tee --append $LOG
-
-retry ec2-stop-instances $OLD_INSTANCE | tee --append $LOG > /dev/null
-echo "Stopping old $NAME instance ($OLD_INSTANCE)" | tee --append $LOG
-
-retry ec2-create-tags $OLD_INSTANCE --tag Name=${NAME}-retired --tag RetiredDate=$DATE --tag NewInstance=$INSTANCE | tee --append $LOG > /dev/null
-echo "Tagged old instance $OLD_INSTANCE" | tee --append $LOG
-
-retry ec2-create-tags $OLD_VOLUME --tag Name=${NAME}-retired  --tag RetiredDate=$DATE --tag NewInstance=$INSTANCE | tee --append $LOG > /dev/null
-echo "Tagged old volume $OLD_VOLUME" | tee --append $LOG
-
-wget --tries=25 --retry-connrefused --append-output=$LOG --output-document=/dev/null http://$ADDRESS/ > /dev/null
-if [ $? -ne 0 ]
-then
-    echo "Unable to access http://$ADDRESS/" | tee --append $LOG
-    exit 1
-fi
-echo "Retrieved http://$ADDRESS/" | tee --append $LOG
-
-wget --tries=25 --retry-connrefused --append-output=$LOG --output-document=/dev/null http://$SITE/ > /dev/null
-if [ $? -ne 0 ]
-then
-    echo "Unable to access http://$SITE/" | tee --append $LOG
-    exit 1
-fi
-echo "Retrieved http://$SITE/" | tee --append $LOG
-
-# If the instance or volume doesn't have any alarms then grep won't find any
-# matching rows. We don't want execution to end then so we turn off pipefail.
-retry update-cloudwatch-alarms $OLD_INSTANCE $INSTANCE | tee --append $LOG
-retry update-cloudwatch-alarms $OLD_VOLUME $VOLUME | tee --append $LOG
-echo "Updated CloudWatch alarms" | tee --append $LOG
-
-retry ec2-deregister $AMI | tee --append $LOG > /dev/null
-echo "Deregistered AMI $AMI" | tee --append $LOG
-
-echo "DONE" | tee --append $LOG
-echo "Instance $INSTANCE started in $AZ" | tee --append $LOG
-date >> $LOG
+    # Check the host still works
+    print_and_log('Checking {0}'.format(ip_address))
+    get_url('http://{0}/'.format(ip_address))
+    print_and_log('Checking {0}'.format(args.host))
+    get_url('http://{0}/'.format(args.host))
+    
+if __name__ == "__main__":
+    main()
