@@ -64,13 +64,11 @@ def retry(f, retries=3):
 
 """Get the contents of a URL as a string"""    
 def get_url(url):
-    logger.debug('Getting {0}'.format(url))
-    data = retry(lambda: urllib2.urlopen(url, timeout=10).read())
-    print_and_log('Got {0} bytes of data from {1}'.format(len(data), url))
+    return retry(lambda: urllib2.urlopen(url, timeout=10).read())
 
 """Get the ID of the current instance"""
 def get_instance_id():
-    return get_url('http://169.254.169.254/latest/meta-data/instance-id').read()
+    return get_url('http://169.254.169.254/latest/meta-data/instance-id')
     
 """Call a boto connection function using the AWS environment variables. This supports both
 ordinary and delegated credentials"""
