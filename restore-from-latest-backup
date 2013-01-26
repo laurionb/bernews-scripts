@@ -368,7 +368,7 @@ def main():
         prompt('Ready to move EIP {0} ({1}) to instance {2}'.format(ip_address, args.host, instance.public_dns_name))
 
         print_and_log('Disabling API termination')
-        retry(lambda: ec2.modify_instance_attribute(instance.id, 'disableApiTermination ', True))
+        retry(lambda: ec2.modify_instance_attribute(instance.id, 'disableApiTermination', True))
         
     except:
         print_error_and_log('Caught an exception, cleaning up...')
@@ -387,8 +387,8 @@ def main():
     retry(lambda: ec2.associate_address(instance_id=instance.id, public_ip=ip_address))
 
     # Tag the old host
-    tag_resource(old_instance.id, retired_tags)
-    tag_resource(old_volume.id, retired_tags)
+    tag_resource(ec2, old_instance.id, retired_tags)
+    tag_resource(ec2, old_volume.id, retired_tags)
 
     # Move the CloudWatch alarms over
     print_and_log('Updating CloudWatch alarms')
