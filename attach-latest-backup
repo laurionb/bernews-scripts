@@ -1,0 +1,239 @@
+#!/usr/bin/python
+import argparse
+import boto
+import getpass
+import logging
+import os
+import string
+import sys
+import time
+import urllib2
+
+from boto.ec2.blockdevicemapping import EBSBlockDeviceType, BlockDeviceMapping
+from datetime import datetime
+from operator import attrgetter
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# format with the time
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+# log to a file
+fh = logging.FileHandler('aws.log')
+fh.setLevel(logging.DEBUG)
+fh.setFormatter(formatter)
+logger.addHandler(fh)
+# also log boto errors to the file
+logging.getLogger('boto').addHandler(fh)
+
+"""Generate a beep sound"""
+def beep():
+    print '\a'
+    
+"""Prints a string to the console and logs it"""
+def print_and_log(s):
+    print s
+    logger.info(s)
+
+"""Prints a string to the console and logs it"""
+def print_error_and_log(s):
+    print 'ERROR: ' + s
+    logger.error(s)
+
+"""Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
+def prompt(p):
+    beep()
+    i = raw_input('### ' + p + '. Press ENTER to continue. ### ').lower()
+    if str.startswith(i, 'q') or str.startswith(i, 'n'):
+        raise Exception('Cancelled')
+
+"""Call a function, retrying on failures"""
+def retry(f, retries=3):
+    failures = 0
+    while True:
+        try:
+            result = f()            
+            return result
+        except Exception as e:
+            failures = failures + 1
+            if failures > retries:
+                print_and_log('Failed after {0} retries'.format(failures))
+                logger.error('Failed after {0} retries with exception {1}'.format(failures, e))
+                raise         
+            logger.warning('Got exception {0} ({1} failures total). Retrying...'.format(e.__class__.__name__, failures))
+            time.sleep(2)
+
+"""Get the contents of a URL as a string"""    
+def get_url(url):
+    logger.debug('Getting {0}'.format(url))
+    data = retry(lambda: urllib2.urlopen(url, timeout=10).read())
+    print_and_log('Got {0} bytes of data from {1}'.format(len(data), url))
+
+"""Get the ID of the current instance"""
+def get_instance_id():
+    return get_url('http://169.254.169.254/latest/meta-data/instance-id').read()
+    
+"""Call a boto connection function using the AWS environment variables. This supports both
+ordinary and delegated credentials"""
+def connect_to_aws(f, creds):
+    if ('AWS_DELEGATION_TOKEN' in creds):
+        return f(creds['AWS_ACCESS_KEY'], creds['AWS_SECRET_KEY'], security_token = creds['AWS_DELEGATION_TOKEN'])
+    else:
+        return f(creds['AWS_ACCESS_KEY'], creds['AWS_SECRET_KEY'])
+
+"""Get temporary AWS credentials"""
+def get_aws_credentials(access_key, secret_key):
+    iam = boto.connect_iam(access_key, secret_key)
+    user = iam.get_user()['get_user_response']['get_user_result']['user']['user_name']
+    mfa_serial_number = iam.get_all_mfa_devices(user)['list_mfa_devices_response']['list_mfa_devices_result']['mfa_devices'][0]['serial_number']
+    if (None != mfa_serial_number):
+        print 'Enter the MFA token for MFA device {0} (user: {1})'.format(mfa_serial_number, user) # just print to the console, no logging
+        mfa_token = getpass.getpass('Token: ')
+        sts = boto.connect_sts(access_key, secret_key)
+        token = sts.get_session_token(duration = 3600, force_new = True, mfa_serial_number = mfa_serial_number, mfa_token = mfa_token)
+        creds = {'AWS_ACCESS_KEY': token.access_key, 'AWS_SECRET_KEY': token.secret_key, 'AWS_DELEGATION_TOKEN': token.session_token}
+    else:
+        creds = {'AWS_ACCESS_KEY': access_key, 'AWS_SECRET_KEY': secret_key}
+    return creds
+
+"""Parse the commandline"""
+def parse_commandline():
+    parser = argparse.ArgumentParser(description='Attach a backup to an EC2 instance.')
+    parser.add_argument('--aws-access-key', metavar='KEY', help='AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).')
+    parser.add_argument('--aws-secret-key', metavar='KEY', help='AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).')
+    parser.add_argument('--device', help='The device to attach the volume to. Defaults to /dev/sdb.')
+    parser.add_argument('--instance', help='The instance to attach the volume to. Defaults to the current instance.')
+    parser.add_argument('--iops', help='The number of I/O operations per second (IOPS) that the volume supports. Defaults to none.')
+    parser.add_argument('--size', help='The size of the volume, in GiBs. Defaults to the same size as the snapshot.')
+    parser.add_argument('--verbose', action='store_true', help='Turns on verbose logging.')        
+    parser.add_argument('name', help='The name of the backup to restore')
+    args = parser.parse_args()
+    logger.info(args)
+    return args
+    
+"""Get environment variables that can be used to fill in missing arguments"""    
+def get_env_vars(args):
+    if (None == args.aws_access_key):
+        if ('AWS_ACCESS_KEY' in os.environ):
+            args.aws_access_key = os.environ['AWS_ACCESS_KEY']
+        else:
+            sys.exit('AWS Access Key ID not specified')
+    if (None == args.aws_secret_key):
+        if ('AWS_SECRET_KEY' in os.environ):
+            args.aws_secret_key = os.environ['AWS_SECRET_KEY']
+        else:
+            sys.exit('AWS Secret Access Key not specified')
+    return args    
+
+"""Tag a resource"""            
+def tag_resource(ec2, resource_id, tags):
+    logger.debug('Tagging {0} with {1}'.format(resource_id, tags))
+    retry(lambda: ec2.create_tags([resource_id], tags))
+    logger.debug('Tagged {0} with {1}'.format(resource_id, tags))
+    
+"""Format tags as a string"""    
+def format_tags(tags):
+    return ','.join(['{0}:{1}'.format(t.name,t.value) for t in tags])
+    
+"""Wait for the volume to have the specified status"""    
+def wait_for_volume_status(volume, status):    
+    while status != volume.status:
+        time.sleep(2)
+        retry(lambda: volume.update(True))
+    print_and_log('{0} is {1}'.format(volume.id, volume.status))            
+    
+def main():
+    args = parse_commandline()
+    
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger('boto').setLevel(logging.INFO)
+        logger.debug('Verbose logging enabled')
+        
+    date = datetime.utcnow().isoformat()
+    logger.debug('date = {0}'.format(date))
+        
+    args = get_env_vars(args)            
+        
+    credentials = get_aws_credentials(args.aws_access_key, args.aws_secret_key)
+
+    print_and_log('*** Latest backup of {0} is:'.format(args.name))
+    
+    # Connect to AWS    
+    ec2 = connect_to_aws(boto.connect_ec2, credentials)
+    
+    # Find the snapshot to restore 
+    snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': args.name, 'status': 'completed'}))
+    snapshots = sorted(snapshots, key=attrgetter('start_time'), reverse=True)
+    logger.debug(snapshots)
+    snapshot = snapshots[0]
+    print_and_log('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
+    print_and_log('        Snapshot Size: {0}'.format(snapshot.volume_size))    
+    print_and_log('        Snapshot Date: {0}'.format(snapshot.start_time))
+    print_and_log('        Snapshot Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id})))))
+
+    # Get the default arguments
+    logger.debug('args before defaults applied: {0}'.format(args))
+    args.device = args.device or '/dev/sdb'
+    args.size = args.size or snapshot.volume_size
+    args.instance = args.instance or get_instance_id()
+    logger.debug('args after defaults applied: {0}'.format(args))
+
+    instance = retry(lambda: ec2.get_all_instances([args.instance]))[0].instances[0]        
+    instance_name = retry(lambda: ec2.get_all_tags(filters={'resource-id': instance.id, 'key': 'Name'}))[0].value 
+    
+    print ''
+    print_and_log('*** Launch parameters:')
+    print_and_log('             Instance: {0} ({1})'.format(instance.id, instance_name))
+    print_and_log('               Device: {0}'.format(args.device))
+    print_and_log('    Availability Zone: {0}'.format(instance.placement))
+    print_and_log('          Volume Size: {0}'.format(int(args.size)))    
+    if (None != args.iops):
+        print_and_log('                 IOPS: {0}'.format(int(args.iops)))    
+
+    # Tags to apply to new volume
+    tags = {'Name': args.name+'-restored', 'Date': date, 'Snapshot': snapshot.id, 'SnapshotDate': snapshot.start_time, 'AttachedTo': instance_name}
+    logger.debug('tags={0}'.format(tags))
+    
+    prompt('Ready to start')
+    
+    volume = None
+    
+    # Create the volume. If anything fails here we will cleanup
+    try:    
+        logger.debug('Creating volume')
+        if (None != args.iops):            
+            volume = retry(lambda: snapshot.create_volume(instance.placement, size=args.size, volume_type='io1', iops=args.iops))
+        else:
+            volume = retry(lambda: snapshot.create_volume(instance.placement, size=args.size))
+        print_and_log('Created volume {0}'.format(volume.id))
+        wait_for_volume_status(volume, 'available')        
+        logger.debug('Tagging volume')
+        tag_resource(ec2, volume.id, tags)
+        logger.debug('Attaching volume')
+        attached = retry(lambda: volume.attach(instance.id, args.device))
+        logger.info('attached={0}'.format(attached))
+        print_and_log('Attached {0} to {1} as {2}'.format(volume.id, instance.id, args.device))
+        wait_for_volume_status(volume, 'in-use')        
+        
+        dir = '/{0}'.format(snapshot.id)
+        print 'To mount the device use:'
+        print '  sudo mkdir {0}'.format(dir)
+        print '  sudo mount --read-only --types ext4 {0} {1}'.format(args.device,dir)
+        print 'To unmount the device use:'
+        print '  sudo umount {0}'.format(dir)
+        print '  sudo rmdir {0}'.format(dir)
+        
+        prompt('Ready to detach')
+        
+    finally:
+        if (None != volume):
+            detached = retry(lambda: volume.detach(True))
+            logger.info('detached={0}'.format(detached))
+            print_and_log('Detached {0}'.format(volume.id))
+            wait_for_volume_status(volume, 'available')
+            deleted = retry(lambda: volume.delete())
+            logger.info('deleted={0}'.format(deleted))
+            print_and_log('Deleted {0}'.format(volume.id))
+    
+if __name__ == "__main__":
+    main()

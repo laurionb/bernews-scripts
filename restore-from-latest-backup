@@ -40,6 +40,13 @@ def print_error_and_log(s):
     print 'ERROR: ' + s
     logger.error(s)
     
+"""Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
+def prompt(p):
+    beep()
+    i = raw_input('### ' + p + '. Press ENTER to continue. ### ').lower()
+    if str.startswith(i, 'q') or str.startswith(i, 'n'):
+        raise Exception('Cancelled')
+    
 """Call a function, retrying on failures"""
 def retry(f, retries=60):
     failures = 0
@@ -195,13 +202,6 @@ def tag_resource(ec2, resource_id, tags):
 """Format tags as a string"""    
 def format_tags(tags):
     return ','.join(['{0}:{1}'.format(t.name,t.value) for t in tags])
-
-"""Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
-def prompt(p):
-    beep()
-    i = raw_input('### ' + p + '. Press ENTER to continue. ### ').lower()
-    if str.startswith(i, 'q') or str.startswith(i, 'n'):
-        raise Exception('Cancelled')
     
 def main():
     args = parse_commandline()
@@ -237,7 +237,7 @@ def main():
     instance_name = retry(lambda: ec2.get_all_tags(filters={'resource-id': old_instance_id, 'key': 'Name'}))[0].value
     print_and_log('                 Name: {0}'.format(instance_name))
     
-    old_instance = retry(lambda: ec2.get_all_instances(old_instance_id))[0].instances[0]
+    old_instance = retry(lambda: ec2.get_all_instances([old_instance_id]))[0].instances[0]
     print_and_log('                State: {0}'.format(old_instance.state))
     print_and_log('        Instance Type: {0}'.format(old_instance.instance_type))
     print_and_log('    Availability Zone: {0}'.format(old_instance.placement))
@@ -260,10 +260,9 @@ def main():
     logger.debug(snapshots)
     snapshot = snapshots[0]
     print_and_log('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
-    print_and_log('        Snapshot Size: {0}'.format(snapshot.volume_size))
-    
-    snapshot_date = retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id, 'key': 'Date'}))[0].value 
-    print_and_log('        Snapshot Date: {0}'.format(snapshot_date))
+    print_and_log('        Snapshot Size: {0}'.format(snapshot.volume_size))    
+    print_and_log('        Snapshot Date: {0}'.format(snapshot.start_time))
+    print_and_log('      Snapshot Status: {0}'.format(snapshot.status))
     print_and_log('        Snapshot Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id})))))
 
     # Get the default arguments
@@ -297,10 +296,18 @@ def main():
     print_matching_cloudwatch_alarms(cw, old_volume.id)
 
     # Tags to apply to new resources
-    tags = {'Name': instance_name, 'Date': date, 'Kernel': args.kernel, 'Snapshot': snapshot.id, 'SnapshotDate': snapshot_date, 'OldInstance': old_instance.id, 'OldVolume': old_volume.id}
+    tags = {
+        'Name': instance_name,
+        'Date': date,
+        'Kernel': args.kernel,
+        'Snapshot': snapshot.id,
+        'SnapshotDate': snapshot.start_time,
+        'OldInstance': old_instance.id,
+        'OldVolume': old_volume.id,
+        'CreatedBy': getpass.getuser()}
     logger.debug('tags={0}'.format(tags))
     # Tags to apply to retired resources
-    retired_tags = {'Name': instance_name + '-retired', 'RetiredDate': date}
+    retired_tags = {'Name': instance_name + '-retired', 'RetiredDate': date, 'RetiredBy': getpass.getuser()}
     logger.debug('retired_tags={0}'.format(retired_tags))
     
     # Ready to start
@@ -385,7 +392,7 @@ def main():
     except:
         print_error_and_log('Caught an exception, cleaning up...')
         if instance:
-            print_and_log('Terminating {0}'.format(instance))
+            print_and_log('Terminating {0}'.format(instance.id))
             retry(lambda: ec2.terminate_instances([instance.id]))
         raise
     finally:
