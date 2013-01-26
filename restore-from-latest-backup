@@ -5,6 +5,7 @@ import getpass
 import logging
 import os
 import socket
+import string
 import sys
 import time
 import urllib2
@@ -53,7 +54,7 @@ def retry(f, retries=60):
 
 def get_url(url):
     logger.debug('Getting {0}'.format(url))
-    data = retry(lambda: urllib2.urlopen(url, timeout=10).read(), retries=120)
+    data = retry(lambda: urllib2.urlopen(url, timeout=10).read(), retries=150)
     print_and_log('Got {0} bytes of data from {1}'.format(len(data), url))
             
 """Call a boto connection function using the AWS environment variables. This supports both
@@ -147,33 +148,46 @@ def validate_args(ec2, args):
         print_error_and_log('Security group {0} not found'.format(args.security_group))
         raise
 
-def update_cloudwatch_dimensions(dimensions, old, new):
+"""Call function f on all dimensions that contain match"""
+def update_cloudwatch_dimensions(dimensions, match, f):
     for (k, v) in dimensions.items():
         if isinstance(v,list):
-            if -1 != string.find(v[0], old):
-                dimensions[k][0] = string.replace(v[0], old, new)
+            if -1 != string.find(v[0], match):
+                dimensions[k][0] = f(v[0])
                 return True
-        elif -1 != string.find(v, old):
-                dimensions[k] = string.replace(v, old, new)
+        elif -1 != string.find(v, match):
+                dimensions[k] = f(v)
                 return True
     return False
-        
+
+comp_map = {'>': 'GreaterThanThreshold', '<': 'LessThanThreshold', '<=': 'LessThanThreshold', '>=': 'GreaterThanOrEqualToThreshold'}
+    
 """Update CloudWatch alarms, updating the dimensions"""
 def update_cloudwatch_alarms(cw, old, new):
-    comp_map = { '>': 'GreaterThanThreshold', '<': 'LessThanThreshold', '<=': 'LessThanThreshold', '>=': 'GreaterThanOrEqualToThreshold' }
     for alarm in retry(lambda: cw.describe_alarms()):
         alarm.comparison = comp_map[alarm.comparison]
         logger.debug(alarm)
-        if update_dimensions(alarm.dimensions, old, new):
-            print_and_log('updating {0} ({1}}'.format(alarm, alarm.dimensions))
-            logger.debug(alarm)
+        if update_cloudwatch_dimensions(alarm.dimensions, old, lambda s: string.replace(s, old, new)):
+            print_and_log('updating {0} ({1})'.format(alarm, alarm.dimensions))
             retry(lambda: cw.create_alarm(alarm))
 
+"""Print CloudWatch alarms with dimensions that contain the string"""
+def print_matching_cloudwatch_alarms(cw, match):
+    for alarm in retry(lambda: cw.describe_alarms()):
+        alarm.comparison = comp_map[alarm.comparison]
+        logger.debug(alarm)
+        if update_cloudwatch_dimensions(alarm.dimensions, match, lambda s: s):
+            print_and_log('    {0} ({1})'.format(alarm, alarm.dimensions))
+            
 """Tag a resource"""            
 def tag_resource(ec2, resource_id, tags):
     logger.debug('Tagging {0} with {1}'.format(resource_id, tags))
     retry(lambda: ec2.create_tags([resource_id], tags))
     logger.debug('Tagged {0} with {1}'.format(resource_id, tags))
+    
+"""Format tags as a string"""    
+def format_tags(tags):
+    return ','.join(['{0}:{1}'.format(t.name,t.value) for t in tags])
 
 """Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
 def prompt(p):
@@ -182,14 +196,15 @@ def prompt(p):
         raise Exception('Cancelled')
     
 def main():
-    date = datetime.utcnow().isoformat()
-
     args = parse_commandline()
     
     if args.verbose:
         logger.setLevel(logging.DEBUG)
         logging.getLogger('boto').setLevel(logging.INFO)
         logger.debug('Verbose logging enabled')
+    
+    date = datetime.utcnow().isoformat()
+    logger.debug('date = {0}'.format(date))
     
     args = get_env_vars(args)            
         
@@ -200,9 +215,12 @@ def main():
     # Get the IP address of the host we are going to restore
     ip_address = get_ip_address(args.host)
     print_and_log('                  EIP: {0}'.format(ip_address))
-    
-    # Find the EIP for that address
+
+    # Connect to AWS    
     ec2 = connect_to_aws(boto.connect_ec2, credentials)
+    cw = connect_to_aws(boto.connect_cloudwatch, credentials)    
+    
+    # Find the EIP for that address    
     eip = retry(lambda: ec2.get_all_addresses(filters={'public-ip': ip_address}))[0]
     old_instance_id = eip.instance_id
     print_and_log('             Instance: {0}'.format(old_instance_id))
@@ -213,14 +231,18 @@ def main():
     
     old_instance = retry(lambda: ec2.get_all_instances(old_instance_id))[0].instances[0]
     print_and_log('                State: {0}'.format(old_instance.state))
-    print_and_log('        Instance type: {0}'.format(old_instance.instance_type))
+    print_and_log('        Instance Type: {0}'.format(old_instance.instance_type))
     print_and_log('    Availability Zone: {0}'.format(old_instance.placement))
     print_and_log('               Kernel: {0}'.format(old_instance.kernel))
-    print_and_log('       Security group: {0}'.format(old_instance.groups[0].name))
+    print_and_log('       Security Group: {0}'.format(old_instance.groups[0].name))
     print_and_log('              SSH Key: {0}'.format(old_instance.key_name))
+    print_and_log('                 Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': old_instance.id})))))
     
     old_volume = retry(lambda: ec2.get_all_volumes(filters={'attachment.instance-id': old_instance_id}))[0]
     print_and_log('               Volume: {0}'.format(old_volume.id))
+    print_and_log('        Volume Status: {0}'.format(old_volume.status))
+    print_and_log('          Volume Size: {0}'.format(old_volume.size))
+    print_and_log('          Volume Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': old_volume.id})))))
 
     # Find the snapshot to restore 
     print ''
@@ -232,7 +254,8 @@ def main():
     print_and_log('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
     
     snapshot_date = retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id, 'key': 'Date'}))[0].value 
-    print_and_log('        Snapshot date: {0}'.format(snapshot_date))
+    print_and_log('        Snapshot Date: {0}'.format(snapshot_date))
+    print_and_log('        Snapshot Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id})))))
 
     # Get the default arguments
     logger.debug('args before defaults applied: {0}'.format(args))
@@ -246,23 +269,28 @@ def main():
     # Launch parameters
     print ''
     print_and_log('*** Launch parameters:')
-    print_and_log('        Instance type: {0}'.format(args.instance_type))
+    print_and_log('        Instance Type: {0}'.format(args.instance_type))
     print_and_log('    Availability Zone: {0}'.format(args.availability_zone))
     print_and_log('               Kernel: {0}'.format(args.kernel))
     print_and_log('              SSH Key: {0}'.format(args.key_name))
     print_and_log('       Security Group: {0}'.format(args.security_group))
-    print_and_log('         Client token: {0}'.format(args.security_group))
-    
-    
+     
     # Validate launch parameters
     print ''
     print_and_log('*** Validating launch parameters...')
     validate_args(ec2, args)
+    
+    print ''
+    print_and_log('*** These CloudWatch alarms will be updated:')
+    print_matching_cloudwatch_alarms(cw, old_instance.id)
+    print_matching_cloudwatch_alarms(cw, old_volume.id)
 
     # Tags to apply to new resources
     tags = {'Name': instance_name, 'Date': date, 'Kernel': args.kernel, 'Snapshot': snapshot.id, 'SnapshotDate': snapshot_date, 'OldInstance': old_instance.id, 'OldVolume': old_volume.id}
+    logger.debug('tags={0}'.format(tags))
     # Tags to apply to retired resources
     retired_tags = {'Name': instance_name + '-retired', 'RetiredDate': date}
+    logger.debug('retired_tags={0}'.format(retired_tags))
     
     # Ready to start
     print ''
@@ -307,10 +335,10 @@ def main():
         instance = reservation.instances[0]
         print_and_log('             Instance: {0}'.format(instance.id))
         print_and_log('                State: {0}'.format(instance.state))
-        print_and_log('        Instance type: {0}'.format(instance.instance_type))
+        print_and_log('        Instance Type: {0}'.format(instance.instance_type))
         print_and_log('    Availability Zone: {0}'.format(instance.placement))
         print_and_log('               Kernel: {0}'.format(instance.kernel))
-        print_and_log('       Security group: {0}'.format(instance.groups[0].name))
+        print_and_log('       Security Group: {0}'.format(instance.groups[0].name))
         print_and_log('              SSH Key: {0}'.format(instance.key_name))
         tag_resource(ec2, instance.id, tags)
         retired_tags['NewInstance'] = instance.id
@@ -327,6 +355,8 @@ def main():
         logger.debug('Getting instance volume')
         volume = retry(lambda: ec2.get_all_volumes(filters={'attachment.instance-id': instance.id}))[0]
         print_and_log('               Volume: {0}'.format(old_volume.id))
+        print_and_log('        Volume Status: {0}'.format(volume.status))
+        print_and_log('          Volume Size: {0}'.format(volume.size))
 
         tag_resource(ec2, volume.id, tags)
         retired_tags['NewVolume'] = volume.id
@@ -338,7 +368,7 @@ def main():
         prompt('Ready to move EIP {0} ({1}) to instance {2}'.format(ip_address, args.host, instance.public_dns_name))
 
         print_and_log('Disabling API termination')
-        retry(lambda: ec2.modify_instance_attribute(instance.id, 'disableApiTermination ', True)
+        retry(lambda: ec2.modify_instance_attribute(instance.id, 'disableApiTermination ', True))
         
     except:
         print_error_and_log('Caught an exception, cleaning up...')
@@ -356,21 +386,20 @@ def main():
     print_and_log('Moving EIP')
     retry(lambda: ec2.associate_address(instance_id=instance.id, public_ip=ip_address))
 
+    # Tag the old host
+    tag_resource(old_instance.id, retired_tags)
+    tag_resource(old_volume.id, retired_tags)
+
+    # Move the CloudWatch alarms over
+    print_and_log('Updating CloudWatch alarms')
+    update_cloudwatch_alarms(cw, old_instance.id, instance.id)
+    update_cloudwatch_alarms(cw, old_volume.id, volume.id)
+    
     # Check the host now works
     print_and_log('Checking {0}'.format(ip_address))
     get_url('http://{0}/'.format(ip_address))
     print_and_log('Checking {0}'.format(args.host))
     get_url('http://{0}/'.format(args.host))
-
-    # Move the CloudWatch alarms over
-    print_and_log('Updating CloudWatch alarms')
-    cw = connect_to_aws(boto.connect_cloudwatch, credentials)    
-    update_cloudwatch_alarms(cw, old_instance.id, instance.id)
-    update_cloudwatch_alarms(cw, old_volume.id, volume.id)
-    
-    # Tag the old host
-    tag_resource(old_instance.id, retired_tags)
-    tag_resource(old_volume.id, retired_tags)
     
     # Shutdown the old host
     print_and_log('Stopping old instance')
@@ -381,6 +410,25 @@ def main():
     get_url('http://{0}/'.format(ip_address))
     print_and_log('Checking {0}'.format(args.host))
     get_url('http://{0}/'.format(args.host))
+
+    retry(lambda: instance.update(True))
+    
+    print ''
+    print_and_log('*** SUCCESS')
+    print_and_log('             Instance: {0}'.format(instance.id))
+    print_and_log('                State: {0}'.format(instance.state))
+    print_and_log('        Instance Type: {0}'.format(instance.instance_type))
+    print_and_log('    Availability Zone: {0}'.format(instance.placement))
+    print_and_log('               Kernel: {0}'.format(instance.kernel))
+    print_and_log('       Security Group: {0}'.format(instance.groups[0].name))
+    print_and_log('              SSH Key: {0}'.format(instance.key_name))
+    print_and_log('                 Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': instance.id})))))
+
+    retry(lambda: volume.update(True))
+    print_and_log('               Volume: {0}'.format(volume.id))
+    print_and_log('        Volume Status: {0}'.format(volume.status))
+    print_and_log('          Volume Size: {0}'.format(volume.size))
+    print_and_log('          Volume Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': volume.id})))))
     
 if __name__ == "__main__":
     main()
