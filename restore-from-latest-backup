@@ -26,6 +26,10 @@ logger.addHandler(fh)
 # also log boto errors to the file
 logging.getLogger('boto').addHandler(fh)
 
+"""Generate a beep sound"""
+def beep():
+    print '\a'
+    
 """Prints a string to the console and logs it"""
 def print_and_log(s):
     print s
@@ -87,6 +91,7 @@ def parse_commandline():
     parser.add_argument('--kernel', help='Specifies the ID of the kernel to launch the new instance with. Defaults to the same kernel as the current instance.')
     parser.add_argument('--key', metavar='KEYPAIR', dest='key_name', help='Specifies the name of the key pair to use when launching the new instance. Defaults to the same key pair as the current instance.')
     parser.add_argument('--group', metavar='GROUP', dest='security_group', help='Specifies the security group within which the new instance should be run. Defaults to the same security group as the current instance.')
+    parser.add_argument('--size', help='The size of the volume, in GiBs. Defaults to the same size as the snapshot.')
     parser.add_argument('--verbose', action='store_true', help='Turns on verbose logging.')    
     parser.add_argument('host', help='The DNS name of the instance to restore')
     args = parser.parse_args()
@@ -147,6 +152,8 @@ def validate_args(ec2, args):
     except:
         print_error_and_log('Security group {0} not found'.format(args.security_group))
         raise
+    if args.size < 8:
+        raise Exception('Size {0} is too small'.format(args.size))
 
 """Call function f on all dimensions that contain match"""
 def update_cloudwatch_dimensions(dimensions, match, f):
@@ -191,6 +198,7 @@ def format_tags(tags):
 
 """Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
 def prompt(p):
+    beep()
     i = raw_input('### ' + p + '. Press ENTER to continue. ### ').lower()
     if str.startswith(i, 'q') or str.startswith(i, 'n'):
         raise Exception('Cancelled')
@@ -252,6 +260,7 @@ def main():
     logger.debug(snapshots)
     snapshot = snapshots[0]
     print_and_log('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
+    print_and_log('        Snapshot Size: {0}'.format(snapshot.volume_size))
     
     snapshot_date = retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id, 'key': 'Date'}))[0].value 
     print_and_log('        Snapshot Date: {0}'.format(snapshot_date))
@@ -264,6 +273,7 @@ def main():
     args.kernel = args.kernel or old_instance.kernel
     args.key_name = args.key_name or old_instance.key_name
     args.security_group = args.security_group or old_instance.groups[0].name
+    args.size = args.size or snapshot.volume_size
     logger.debug('args after defaults applied: {0}'.format(args))
 
     # Launch parameters
@@ -274,6 +284,7 @@ def main():
     print_and_log('               Kernel: {0}'.format(args.kernel))
     print_and_log('              SSH Key: {0}'.format(args.key_name))
     print_and_log('       Security Group: {0}'.format(args.security_group))
+    print_and_log('          Volume Size: {0}'.format(args.size))
      
     # Validate launch parameters
     print ''
@@ -305,6 +316,7 @@ def main():
         logger.debug('Registering the AMI')
         ebs = EBSBlockDeviceType()
         ebs.snapshot_id = snapshot.id
+        ebs.size = args.size
         ebs.delete_on_termination = True
         block_map = BlockDeviceMapping()
         block_map['/dev/sda1'] = ebs
@@ -373,13 +385,13 @@ def main():
     except:
         print_error_and_log('Caught an exception, cleaning up...')
         if instance:
-            logger.info('Terminating {0}'.format(instance))
+            print_and_log('Terminating {0}'.format(instance))
             retry(lambda: ec2.terminate_instances([instance.id]))
         raise
     finally:
         # We always want to get rid of the AMI
         if ami:
-            logger.info('Deregistering {0}'.format(ami))
+            print_and_log('Deregistering {0}'.format(ami))
             retry(lambda: ec2.deregister_image(ami))
     
     # At this point the new instance is running and available. Time to move the EIP over
@@ -429,6 +441,8 @@ def main():
     print_and_log('        Volume Status: {0}'.format(volume.status))
     print_and_log('          Volume Size: {0}'.format(volume.size))
     print_and_log('          Volume Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': volume.id})))))
+    
+    beep()
     
 if __name__ == "__main__":
     main()
