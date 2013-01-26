@@ -307,10 +307,8 @@ def main():
         'Name': instance_name,
         'Date': date,
         'Kernel': args.kernel,
-        'Snapshot': snapshot.id,
-        'SnapshotDate': snapshot.start_time,
-        'OldInstance': old_instance.id,
-        'OldVolume': old_volume.id,
+        'Snapshot': '{0} ({1})'.format(snapshot.id, snapshot.start_time),
+        'OldInstance': '{0}/{1}'.format(old_instance.id, old_volume.id),
         'CreatedBy': getpass.getuser()}
     logger.debug('tags={0}'.format(tags))
     # Tags to apply to retired resources
@@ -367,7 +365,6 @@ def main():
         print_and_log('       Security Group: {0}'.format(instance.groups[0].name))
         print_and_log('              SSH Key: {0}'.format(instance.key_name))
         tag_resource(ec2, instance.id, tags)
-        retired_tags['NewInstance'] = instance.id
 
         print_and_log('Waiting for instance...')
         while 'pending' == instance.state:
@@ -385,7 +382,6 @@ def main():
         print_and_log('          Volume Size: {0}'.format(volume.size))
 
         tag_resource(ec2, volume.id, tags)
-        retired_tags['NewVolume'] = volume.id
                 
         print_and_log('Checking {0}'.format(instance.public_dns_name))
         get_url('http://{0}/'.format(instance.public_dns_name))
@@ -412,14 +408,15 @@ def main():
     print_and_log('Moving EIP')
     retry(lambda: ec2.associate_address(instance_id=instance.id, public_ip=ip_address))
 
-    # Tag the old host
-    tag_resource(ec2, old_instance.id, retired_tags)
-    tag_resource(ec2, old_volume.id, retired_tags)
-
     # Move the CloudWatch alarms over
     print_and_log('Updating CloudWatch alarms')
     update_cloudwatch_alarms(cw, old_instance.id, instance.id)
     update_cloudwatch_alarms(cw, old_volume.id, volume.id)
+    
+    # Tag the old host
+    print_and_log('Tagging old host')
+    tag_resource(ec2, old_instance.id, retired_tags)
+    tag_resource(ec2, old_volume.id, retired_tags)
     
     # Check the host now works
     print_and_log('Checking {0}'.format(ip_address))
