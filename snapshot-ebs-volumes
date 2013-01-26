@@ -2,6 +2,7 @@
 import boto
 import os
 import sys
+import time
 import urllib2
 
 from datetime import datetime
