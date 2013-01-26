@@ -85,14 +85,11 @@ def get_aws_credentials(access_key, secret_key):
     iam = boto.connect_iam(access_key, secret_key)
     user = iam.get_user()['get_user_response']['get_user_result']['user']['user_name']
     mfa_serial_number = iam.get_all_mfa_devices(user)['list_mfa_devices_response']['list_mfa_devices_result']['mfa_devices'][0]['serial_number']
-    if (None != mfa_serial_number):
-        print 'Enter the MFA token for MFA device {0} (user: {1})'.format(mfa_serial_number, user) # just print to the console, no logging
-        mfa_token = getpass.getpass('Token: ')
-        sts = boto.connect_sts(access_key, secret_key)
-        token = sts.get_session_token(duration = 3600, force_new = True, mfa_serial_number = mfa_serial_number, mfa_token = mfa_token)
-        creds = {'AWS_ACCESS_KEY': token.access_key, 'AWS_SECRET_KEY': token.secret_key, 'AWS_DELEGATION_TOKEN': token.session_token}
-    else:
-        creds = {'AWS_ACCESS_KEY': access_key, 'AWS_SECRET_KEY': secret_key}
+    print 'Enter the MFA token for MFA device {0} (user: {1})'.format(mfa_serial_number, user) # just print to the console, no logging
+    mfa_token = getpass.getpass('Token: ')
+    sts = boto.connect_sts(access_key, secret_key)
+    token = sts.get_session_token(duration = 3600, force_new = True, mfa_serial_number = mfa_serial_number, mfa_token = mfa_token)
+    creds = {'AWS_ACCESS_KEY': token.access_key, 'AWS_SECRET_KEY': token.secret_key, 'AWS_DELEGATION_TOKEN': token.session_token}
     return creds
 
 """Parse the commandline"""
