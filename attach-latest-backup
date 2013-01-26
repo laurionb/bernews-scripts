@@ -97,6 +97,7 @@ def parse_commandline():
     parser.add_argument('--aws-secret-key', metavar='KEY', help='AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).')
     parser.add_argument('--device', help='The device to attach the volume to. Defaults to /dev/sdb.')
     parser.add_argument('--instance', help='The instance to attach the volume to. Defaults to the current instance.')
+    parser.add_argument('--snapshot', help='The snapshot to use. Defaults to the most recent snapshot.')
     parser.add_argument('--iops', help='The number of I/O operations per second (IOPS) that the volume supports. Defaults to none.')
     parser.add_argument('--size', help='The size of the volume, in GiBs. Defaults to the same size as the snapshot.')
     parser.add_argument('--verbose', action='store_true', help='Turns on verbose logging.')        
@@ -156,11 +157,17 @@ def main():
     # Connect to AWS    
     ec2 = connect_to_aws(boto.connect_ec2, credentials)
     
-    # Find the snapshot to restore 
-    snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': args.name, 'status': 'completed'}))
-    snapshots = sorted(snapshots, key=attrgetter('start_time'), reverse=True)
-    logger.debug(snapshots)
-    snapshot = snapshots[0]
+    # Find the snapshot to attach
+    if None == args.snapshot:
+        logger.debug('Finding most recent snapshot')
+        snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': args.name, 'status': 'completed'}))
+        snapshots = sorted(snapshots, key=attrgetter('start_time'), reverse=True)
+        logger.debug(snapshots)
+    else:
+        logger.debug('Finding user-specified snapshot {0}'.format(args.snapshot))
+        snapshots = retry(lambda: ec2.get_all_snapshots([args.snapshot]))
+    snapshot = snapshots[0]    
+    
     print_and_log('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
     print_and_log('        Snapshot Size: {0}'.format(snapshot.volume_size))    
     print_and_log('        Snapshot Date: {0}'.format(snapshot.start_time))

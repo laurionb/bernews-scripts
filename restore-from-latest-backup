@@ -99,6 +99,7 @@ def parse_commandline():
     parser.add_argument('--key', metavar='KEYPAIR', dest='key_name', help='Specifies the name of the key pair to use when launching the new instance. Defaults to the same key pair as the current instance.')
     parser.add_argument('--group', metavar='GROUP', dest='security_group', help='Specifies the security group within which the new instance should be run. Defaults to the same security group as the current instance.')
     parser.add_argument('--size', help='The size of the volume, in GiBs. Defaults to the same size as the snapshot.')
+    parser.add_argument('--snapshot', help='The snapshot to use. Defaults to the most recent snapshot.')    
     parser.add_argument('--verbose', action='store_true', help='Turns on verbose logging.')    
     parser.add_argument('host', help='The DNS name of the instance to restore')
     args = parser.parse_args()
@@ -252,13 +253,19 @@ def main():
     print_and_log('          Volume Size: {0}'.format(old_volume.size))
     print_and_log('          Volume Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': old_volume.id})))))
 
-    # Find the snapshot to restore 
+    # Find the snapshot to restore
+    if None == args.snapshot:
+        logger.debug('Finding most recent snapshot')
+        snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': instance_name, 'status': 'completed'}))
+        snapshots = sorted(snapshots, key=attrgetter('start_time'), reverse=True)
+        logger.debug(snapshots)
+    else:
+        logger.debug('Finding user-specified snapshot {0}'.format(args.snapshot))
+        snapshots = retry(lambda: ec2.get_all_snapshots([args.snapshot]))
+    snapshot = snapshots[0]    
+
     print ''
-    print_and_log('*** Latest backup:')
-    snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': instance_name, 'status': 'completed'}))
-    snapshots = sorted(snapshots, key=attrgetter('start_time'), reverse=True)
-    logger.debug(snapshots)
-    snapshot = snapshots[0]
+    print_and_log('*** Backup:')
     print_and_log('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
     print_and_log('        Snapshot Size: {0}'.format(snapshot.volume_size))    
     print_and_log('        Snapshot Date: {0}'.format(snapshot.start_time))
