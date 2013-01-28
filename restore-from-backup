@@ -214,6 +214,7 @@ def main():
     
     date = datetime.utcnow().isoformat()
     logger.debug('date = {0}'.format(date))
+    print_and_log('Time: {0}'.format(time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())))
     
     args = get_env_vars(args)            
         
@@ -324,6 +325,7 @@ def main():
     
     # Create the backup image. If anything fails here we will cleanup
     try:    
+        print_and_log('Time: {0}'.format(time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())))
         # AMI
         logger.debug('Registering the AMI')
         ebs = EBSBlockDeviceType()
@@ -389,6 +391,7 @@ def main():
         print ''
         prompt('Ready to move EIP {0} ({1}) to instance {2}'.format(ip_address, args.host, instance.public_dns_name))
 
+        print_and_log('Time: {0}'.format(time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())))
         print_and_log('Disabling API termination')
         retry(lambda: ec2.modify_instance_attribute(instance.id, 'disableApiTermination', True))
         
@@ -433,10 +436,9 @@ def main():
     get_url('http://{0}/'.format(ip_address))
     print_and_log('Checking {0}'.format(args.host))
     get_url('http://{0}/'.format(args.host))
-
-    retry(lambda: instance.update(True))
     
     print ''
+    retry(lambda: instance.update(True))
     print_and_log('*** SUCCESS')
     print_and_log('             Instance: {0}'.format(instance.id))
     print_and_log('                State: {0}'.format(instance.state))
@@ -452,6 +454,7 @@ def main():
     print_and_log('        Volume Status: {0}'.format(volume.status))
     print_and_log('          Volume Size: {0}'.format(volume.size))
     print_and_log('          Volume Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': volume.id})))))
+    print_and_log('Time: {0}'.format(time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())))
     
     beep()
     
