@@ -48,7 +48,7 @@ def prompt(p):
         raise Exception('Cancelled')
     
 """Call a function, retrying on failures"""
-def retry(f, retries=60):
+def retry(f, retries=1):
     failures = 0
     while True:
         try:
