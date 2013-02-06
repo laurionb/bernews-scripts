@@ -1,0 +1,1 @@
+SELECT CONCAT(tables.table_schema, '.', tables.table_name) AS table_name, table_type, engine FROM information_schema.tables WHERE engine='MyISAM' AND tables.table_schema<>'performance_schema' AND tables.table_schema<>'mysql' AND tables.table_schema<>'information_schema';
