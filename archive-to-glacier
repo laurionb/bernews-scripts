@@ -139,6 +139,7 @@ def main():
     logger.debug('tags={0}'.format(tags))
     
     volume = None
+    tarfile = '/media/ephemeral0/{0}.tar.gz'.format(snapshot-id)
     
     # Create the volume. If anything fails here we will cleanup
     try:    
@@ -158,10 +159,15 @@ def main():
         wait_for_volume_status(volume, 'in-use')        
         
         dir = '/{0}'.format(snapshot.id)
+        logger.debug('creating {0}'.format(dir))
         os.mkdir(dir)
+        logger.debug('mounting {0} at {1}'.format(args.device,dir))
         subprocess.check_call('/bin/mount --read-only --types ext4 {0} {1}'.format(args.device,dir))
-
+        logger.debug('running tar')
+        subprocess.check_call('/bin/tar -czf {0} {1}'.format(tarfile, dir))
+        logger.debug('unmounting')
         subprocess.check_call('/bin/umount {0}'.format(dir))
+        logger.debug('removing directory')
         os.rmdir(dir)
         
     finally:
@@ -173,6 +179,6 @@ def main():
             deleted = retry(lambda: volume.delete())
             logger.info('deleted={0}'.format(deleted))
             logger.info('Deleted {0}'.format(volume.id))
-    
+
 if __name__ == "__main__":
     main()
