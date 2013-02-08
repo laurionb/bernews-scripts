@@ -14,7 +14,7 @@ from datetime import datetime
 from operator import attrgetter
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 # format with the time
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
 # log to a file
@@ -22,6 +22,12 @@ fh = logging.FileHandler('aws.log')
 fh.setLevel(logging.DEBUG)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
+
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+
 # also log boto errors to the file
 logging.getLogger('boto').addHandler(fh)
 
@@ -83,6 +89,10 @@ def wait_for_volume_status(volume, status):
         time.sleep(2)
         retry(lambda: volume.update(True))
     logger.info('{0} is {1}'.format(volume.id, volume.status))            
+
+def run_command(command):
+    logger.debug(command)
+    subprocess.check_call(command)
     
 def main():
     args = parse_commandline()
@@ -120,11 +130,11 @@ def main():
     logger.debug('args before defaults applied: {0}'.format(args))
     args.device = args.device or '/dev/sdb'
     args.size = args.size or snapshot.volume_size
-    args.instance = args.instance or get_instance_id()
+    args.instance = get_instance_id()
     logger.debug('args after defaults applied: {0}'.format(args))
 
-    instance = retry(lambda: ec2.get_all_instances([args.instance]))[0].instances[0]        
-    instance_name = retry(lambda: ec2.get_all_tags(filters={'resource-id': instance.id, 'key': 'Name'}))[0].value 
+    instance = retry(lambda: ec2.get_all_instances([args.instance]))[0].instances[0]
+    instance_name = instance.public_dns_name
     
     logger.info('*** Launch parameters:')
     logger.info('             Instance: {0} ({1})'.format(instance.id, instance_name))
@@ -139,8 +149,11 @@ def main():
     logger.debug('tags={0}'.format(tags))
     
     volume = None
-    tarfile = '/media/ephemeral0/{0}.tar.gz'.format(snapshot-id)
-    
+    tarfile = '/media/ephemeral0/{0}.tar.gz'.format(snapshot.id)
+    dir = '/{0}'.format(snapshot.id)
+    logger.debug('creating {0}'.format(dir))
+    os.mkdir(dir)
+
     # Create the volume. If anything fails here we will cleanup
     try:    
         logger.debug('Creating volume')
@@ -157,18 +170,16 @@ def main():
         logger.info('attached={0}'.format(attached))
         logger.info('Attached {0} to {1} as {2}'.format(volume.id, instance.id, args.device))
         wait_for_volume_status(volume, 'in-use')        
+
+        raw_input()
         
-        dir = '/{0}'.format(snapshot.id)
-        logger.debug('creating {0}'.format(dir))
-        os.mkdir(dir)
         logger.debug('mounting {0} at {1}'.format(args.device,dir))
-        subprocess.check_call('/bin/mount --read-only --types ext4 {0} {1}'.format(args.device,dir))
+        run_command('/bin/mount --read-only --types ext4 {0} {1}/'.format(args.device,dir))
         logger.debug('running tar')
-        subprocess.check_call('/bin/tar -czf {0} {1}'.format(tarfile, dir))
+        run_command('/bin/tar -czf {0} {1}'.format(tarfile, dir))
         logger.debug('unmounting')
-        subprocess.check_call('/bin/umount {0}'.format(dir))
+        run_command('/bin/umount {0}'.format(dir))
         logger.debug('removing directory')
-        os.rmdir(dir)
         
     finally:
         if (None != volume):
@@ -179,6 +190,7 @@ def main():
             deleted = retry(lambda: volume.delete())
             logger.info('deleted={0}'.format(deleted))
             logger.info('Deleted {0}'.format(volume.id))
+        os.rmdir(dir)
 
 if __name__ == "__main__":
     main()
