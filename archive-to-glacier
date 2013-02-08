@@ -1,0 +1,178 @@
+#!/usr/bin/python
+import argparse
+import boto
+import logging
+import os
+import string
+import subprocess
+import sys
+import time
+import urllib2
+
+from boto.ec2.blockdevicemapping import EBSBlockDeviceType, BlockDeviceMapping
+from datetime import datetime
+from operator import attrgetter
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# format with the time
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+# log to a file
+fh = logging.FileHandler('aws.log')
+fh.setLevel(logging.DEBUG)
+fh.setFormatter(formatter)
+logger.addHandler(fh)
+# also log boto errors to the file
+logging.getLogger('boto').addHandler(fh)
+
+"""Call a function, retrying on failures"""
+def retry(f, retries=3):
+    failures = 0
+    while True:
+        try:
+            result = f()            
+            return result
+        except Exception as e:
+            failures = failures + 1
+            if failures > retries:
+                logger.info('Failed after {0} retries'.format(failures))
+                logger.error('Failed after {0} retries with exception {1}'.format(failures, e))
+                raise         
+            logger.warning('Got exception {0} ({1} failures total). Retrying...'.format(e.__class__.__name__, failures))
+            time.sleep(2)
+
+"""Get the contents of a URL as a string"""    
+def get_url(url):
+    return retry(lambda: urllib2.urlopen(url, timeout=10).read())
+
+"""Get the ID of the current instance"""
+def get_instance_id():
+    return get_url('http://169.254.169.254/latest/meta-data/instance-id')
+    
+"""Call a boto connection function using the AWS environment variables. This supports both
+ordinary and delegated credentials"""
+def connect_to_aws(f):
+    return f()
+
+"""Parse the commandline"""
+def parse_commandline():
+    parser = argparse.ArgumentParser(description='Attach a backup to an EC2 instance.')
+    parser.add_argument('--device', help='The device to attach the volume to. Defaults to /dev/sdb.')
+    parser.add_argument('--snapshot', help='The snapshot to use. Defaults to the most recent snapshot.')
+    parser.add_argument('--iops', help='The number of I/O operations per second (IOPS) that the volume supports. Defaults to none.')
+    parser.add_argument('--size', help='The size of the volume, in GiBs. Defaults to the same size as the snapshot.')
+    parser.add_argument('--verbose', action='store_true', help='Turns on verbose logging.')        
+    parser.add_argument('name', help='The name of the backup to restore')
+    args = parser.parse_args()
+    logger.info(args)
+    return args
+    
+"""Tag a resource"""            
+def tag_resource(ec2, resource_id, tags):
+    logger.debug('Tagging {0} with {1}'.format(resource_id, tags))
+    retry(lambda: ec2.create_tags([resource_id], tags))
+    logger.debug('Tagged {0} with {1}'.format(resource_id, tags))
+    
+"""Format tags as a string"""    
+def format_tags(tags):
+    return ','.join(['{0}:{1}'.format(t.name,t.value) for t in tags])
+    
+"""Wait for the volume to have the specified status"""    
+def wait_for_volume_status(volume, status):    
+    while status != volume.status:
+        time.sleep(2)
+        retry(lambda: volume.update(True))
+    logger.info('{0} is {1}'.format(volume.id, volume.status))            
+    
+def main():
+    args = parse_commandline()
+    
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger('boto').setLevel(logging.INFO)
+        logger.debug('Verbose logging enabled')
+        
+    date = datetime.utcnow().isoformat()
+    logger.debug('date = {0}'.format(date))
+        
+    logger.info('*** Latest backup of {0} is:'.format(args.name))
+    
+    # Connect to AWS    
+    ec2 = connect_to_aws(boto.connect_ec2)
+    
+    # Find the snapshot to attach
+    if None == args.snapshot:
+        logger.debug('Finding most recent snapshot')
+        snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': args.name, 'status': 'completed'}))
+        snapshots = sorted(snapshots, key=attrgetter('start_time'), reverse=True)
+        logger.debug(snapshots)
+    else:
+        logger.debug('Finding user-specified snapshot {0}'.format(args.snapshot))
+        snapshots = retry(lambda: ec2.get_all_snapshots([args.snapshot]))
+    snapshot = snapshots[0]    
+    
+    logger.info('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
+    logger.info('        Snapshot Size: {0}'.format(snapshot.volume_size))    
+    logger.info('        Snapshot Date: {0}'.format(snapshot.start_time))
+    logger.info('        Snapshot Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id})))))
+
+    # Get the default arguments
+    logger.debug('args before defaults applied: {0}'.format(args))
+    args.device = args.device or '/dev/sdb'
+    args.size = args.size or snapshot.volume_size
+    args.instance = args.instance or get_instance_id()
+    logger.debug('args after defaults applied: {0}'.format(args))
+
+    instance = retry(lambda: ec2.get_all_instances([args.instance]))[0].instances[0]        
+    instance_name = retry(lambda: ec2.get_all_tags(filters={'resource-id': instance.id, 'key': 'Name'}))[0].value 
+    
+    logger.info('*** Launch parameters:')
+    logger.info('             Instance: {0} ({1})'.format(instance.id, instance_name))
+    logger.info('               Device: {0}'.format(args.device))
+    logger.info('    Availability Zone: {0}'.format(instance.placement))
+    logger.info('          Volume Size: {0}'.format(int(args.size)))    
+    if (None != args.iops):
+        logger.info('                 IOPS: {0}'.format(int(args.iops)))    
+
+    # Tags to apply to new volume
+    tags = {'Name': args.name+'-restored', 'Date': date, 'Snapshot': snapshot.id, 'SnapshotDate': snapshot.start_time, 'AttachedTo': instance_name}
+    logger.debug('tags={0}'.format(tags))
+    
+    volume = None
+    
+    # Create the volume. If anything fails here we will cleanup
+    try:    
+        logger.debug('Creating volume')
+        if (None != args.iops):            
+            volume = retry(lambda: snapshot.create_volume(instance.placement, size=args.size, volume_type='io1', iops=args.iops))
+        else:
+            volume = retry(lambda: snapshot.create_volume(instance.placement, size=args.size))
+        logger.info('Created volume {0}'.format(volume.id))
+        wait_for_volume_status(volume, 'available')        
+        logger.debug('Tagging volume')
+        tag_resource(ec2, volume.id, tags)
+        logger.debug('Attaching volume')
+        attached = retry(lambda: volume.attach(instance.id, args.device))
+        logger.info('attached={0}'.format(attached))
+        logger.info('Attached {0} to {1} as {2}'.format(volume.id, instance.id, args.device))
+        wait_for_volume_status(volume, 'in-use')        
+        
+        dir = '/{0}'.format(snapshot.id)
+        os.mkdir(dir)
+        subprocess.check_call('/bin/mount --read-only --types ext4 {0} {1}'.format(args.device,dir))
+
+        subprocess.check_call('/bin/umount {0}'.format(dir))
+        os.rmdir(dir)
+        
+    finally:
+        if (None != volume):
+            detached = retry(lambda: volume.detach(True))
+            logger.info('detached={0}'.format(detached))
+            logger.info('Detached {0}'.format(volume.id))
+            wait_for_volume_status(volume, 'available')
+            deleted = retry(lambda: volume.delete())
+            logger.info('deleted={0}'.format(deleted))
+            logger.info('Deleted {0}'.format(volume.id))
+    
+if __name__ == "__main__":
+    main()
