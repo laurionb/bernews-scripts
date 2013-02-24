@@ -1,4 +1,5 @@
 #!/usr/bin/python
+import argparse
 import boto
 import os
 import sys
@@ -32,28 +33,36 @@ def connect_to_aws(f):
     else:
         return f(os.environ['AWS_ACCESS_KEY'], os.environ['AWS_SECRET_KEY'])
 
+"""Parse the commandline"""
+def parse_commandline():
+    parser = argparse.ArgumentParser(description='Take a snapshot of EBS volumes')
+    parser.add_argument('--instance-id', help='The instance the volume(s) are attached to. Defaults to the current instance.')
+    parser.add_argument('type', help='The type of snapshot (e.g. "daily").')
+    parser.add_argument('keep', help='The number of snapshots to keep (e.g. 7).')
+    args = parser.parse_args()
+    return args
 
 def main(args):
-    os.system('/bin/sync')
+    args = parse_commandline()
+    if (None == args.instance_id):
+    	os.system('/bin/sync')
+        args.instance_id = get_instance_id()
     time = datetime.utcnow().isoformat()
-    type = args[1] # type of snapshot (e.g. 'daily')
-    keep = args[2] # number of snapshots to keep (e.g. 7)
-    instance_id = get_instance_id()
     ec2 = connect_to_aws(boto.connect_ec2)
-    print 'making backup of type %s, keeping %s for instance %s' % (type, keep, instance_id)
-    volumes = retry(lambda: ec2.get_all_volumes(filters={'attachment.instance-id': instance_id}))
+    print 'making backup of type %s, keeping %s for instance %s' % (args.type, args.keep, args.instance_id)
+    volumes = retry(lambda: ec2.get_all_volumes(filters={'attachment.instance-id': args.instance_id}))
     for v in volumes:
          print 'volume %s is attached' % v.id
          # Get the existing snapshots before we create the new one
          volume_name = retry(lambda: ec2.get_all_tags(filters={'resource-id': v.id, 'key': 'Name'}))[0].value
-         old_snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': volume_name, 'tag:Type': type}))
+         old_snapshots = retry(lambda: ec2.get_all_snapshots(filters={'tag:Name': volume_name, 'tag:Type': args.type}))
          old_snapshots = sorted(old_snapshots, key=attrgetter('start_time'))
-         snapshot_description = '%s %s (%s)' % (volume_name, time, type)
+         snapshot_description = '%s %s (%s)' % (volume_name, time, args.type)
          print 'creating snapshot \'%s\'' % snapshot_description
          snapshot = retry(lambda: ec2.create_snapshot(v.id, snapshot_description))
          print 'created snapshot %s' % snapshot.id
-         retry(lambda: ec2.create_tags([snapshot.id], {'Name': volume_name, 'Instance': instance_id, 'Date': time, 'Type': type, 'Volume': v.id}))
-         to_delete = len(old_snapshots) - int(keep)
+         retry(lambda: ec2.create_tags([snapshot.id], {'Name': volume_name, 'Instance': args.instance_id, 'Date': time, 'Type': args.type, 'Volume': v.id}))
+         to_delete = len(old_snapshots) - int(args.keep)
          for i in range(to_delete):
              print 'deleting snapshot %s \'%s\'' % (old_snapshots[i].id, old_snapshots[i].description)
              retry(lambda: old_snapshots[i].delete())
