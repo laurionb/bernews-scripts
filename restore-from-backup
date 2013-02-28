@@ -427,6 +427,16 @@ def main():
     print_and_log('Checking {0}'.format(args.host))
     get_url('http://{0}/'.format(args.host))
     
+    # EIP failover isn't instant so we sleep
+    print_and_log('Sleeping for one minute...')
+    time.sleep(60)
+
+    # Check the host still works
+    print_and_log('Checking {0}'.format(ip_address))
+    get_url('http://{0}/'.format(ip_address))
+    print_and_log('Checking {0}'.format(args.host))
+    get_url('http://{0}/'.format(args.host))
+    
     # Shutdown the old host
     print_and_log('Stopping old instance')
     retry(lambda: ec2.stop_instances([old_instance.id], force=True))
