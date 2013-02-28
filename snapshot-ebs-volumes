@@ -50,7 +50,7 @@ def main(args):
     	os.system('/bin/sync')
         instance_id = get_instance_id()
     else:
-        instance_id = retry(lambda: ec2.get_all_instances(filters={'tag:Name': args.instance}))[0].instances[0].id
+        instance_id = retry(lambda: ec2.get_all_instances(filters={'tag:Name': args.instance, 'instance-state-name': 'running'}))[0].instances[0].id
     print 'making backup of type %s, keeping %s for instance %s' % (args.type, args.keep, instance_id)
     volumes = retry(lambda: ec2.get_all_volumes(filters={'attachment.instance-id': instance_id}))
     for v in volumes:
