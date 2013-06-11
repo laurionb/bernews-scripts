@@ -10,7 +10,7 @@ import sys
 import time
 import urllib2
 
-from boto.ec2.blockdevicemapping import EBSBlockDeviceType, BlockDeviceMapping
+from boto.ec2.blockdevicemapping import EBSBlockDeviceType, BlockDeviceMapping, BlockDeviceType
 from datetime import datetime
 from operator import attrgetter
 
@@ -203,6 +203,23 @@ def tag_resource(ec2, resource_id, tags):
 """Format tags as a string"""    
 def format_tags(tags):
     return ','.join(['{0}:{1}'.format(t.name,t.value) for t in tags])
+
+"""Add ephemeral drives to the block mapping list. We rely on the fact that these
+are ignored if the ephemeral drives don't exist."""    
+def add_ephemeral_drives_to_block_map(block_map):
+    sdb1 = BlockDeviceType()
+    sdc1 = BlockDeviceType()
+    sdd1 = BlockDeviceType()
+    sde1 = BlockDeviceType()
+    sdb1.ephemeral_name = 'ephemeral0'
+    sdc1.ephemeral_name = 'ephemeral1'
+    sdd1.ephemeral_name = 'ephemeral2'
+    sde1.ephemeral_name = 'ephemeral3'
+    block_map['/dev/sdb1'] = sdb1
+    block_map['/dev/sdc1'] = sdc1
+    block_map['/dev/sdd1'] = sdd1
+    block_map['/dev/sde1'] = sde1
+
     
 def main():
     args = parse_commandline()
@@ -334,6 +351,7 @@ def main():
         ebs.delete_on_termination = True
         block_map = BlockDeviceMapping()
         block_map['/dev/sda1'] = ebs
+        add_ephemeral_drives_to_block_map(block_map)
         logger.debug(block_map)
         ami = retry(lambda: ec2.register_image(
             '{0}-{1}'.format(instance_name, snapshot.id),
@@ -391,6 +409,9 @@ def main():
         print ''
         prompt('Ready to move EIP {0} ({1}) to instance {2}'.format(ip_address, args.host, instance.public_dns_name))
 
+        # Another check to make sure the instance didn't go away while we were waiting for input
+        get_url('http://{0}/'.format(instance.public_dns_name))
+        
         print_and_log('Time: {0}'.format(time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())))
         print_and_log('Disabling API termination')
         retry(lambda: ec2.modify_instance_attribute(instance.id, 'disableApiTermination', True))
