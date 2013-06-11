@@ -428,8 +428,8 @@ def main():
     get_url('http://{0}/'.format(args.host))
     
     # EIP failover isn't instant so we sleep
-    print_and_log('Sleeping for one minute...')
-    time.sleep(60)
+    print_and_log('Sleeping for three minutes...')
+    time.sleep(180)
 
     # Check the host still works
     print_and_log('Checking {0}'.format(ip_address))
