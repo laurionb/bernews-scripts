@@ -51,7 +51,7 @@ def main(args):
     time = datetime.utcnow().isoformat()
     ec2 = connect_to_ec2(args.region)
     if (None == args.instance):
-    	os.system('/bin/sync')
+        os.system('/bin/sync')
         instance_id = get_instance_id()
     else:
         instance_id = retry(lambda: ec2.get_all_instances(filters={'tag:Name': args.instance, 'instance-state-name': 'running'}))[0].instances[0].id
