@@ -51,7 +51,7 @@ def main(args):
     print 'copying latest %s snapshot from %s to %s, keeping %s' % (args.name, args.source_region, args.destination_region, args.keep)
 
     # Start the snapshot copy
-    source_snapshots = retry(lambda: ec2_source.get_all_snapshots(filters={'tag:Name': args.name, 'progress': '100%'}))
+    source_snapshots = retry(lambda: ec2_source.get_all_snapshots(filters={'tag:Name': args.name, 'status': 'completed'}))
     source_snapshots = sorted(source_snapshots, key=attrgetter('start_time'), reverse=True)
     snapshot_to_copy = source_snapshots[0]
     print 'latest snapshot is %s (%s)' % (snapshot_to_copy.id, snapshot_to_copy.description)
@@ -62,7 +62,7 @@ def main(args):
     retry(lambda: ec2_destination.create_tags([snapshot_id], {'Name': args.name}))
 
     # Delete any old snapshots
-    old_snapshots = retry(lambda: ec2_destination.get_all_snapshots(filters={'tag:Name': args.name, 'progress': '100%'}))
+    old_snapshots = retry(lambda: ec2_destination.get_all_snapshots(filters={'tag:Name': args.name, 'status': 'completed'}))
     old_snapshots = sorted(old_snapshots, key=attrgetter('start_time'))
     to_delete = len(old_snapshots) - int(args.keep)
     for i in range(to_delete):
