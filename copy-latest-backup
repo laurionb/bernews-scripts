@@ -35,10 +35,10 @@ def connect_to_ec2(region):
 
 """Parse the commandline"""
 def parse_commandline():
-    parser = argparse.ArgumentParser(description='Take a snapshot of EBS volumes')
+    parser = argparse.ArgumentParser(description='Copy EBS snapshots to another region.')
     parser.add_argument('--source-region', default='us-east-1', help='The region the snapshot is in. Defaults to us-east-1.')
     parser.add_argument('--destination-region', default='us-west-2', help='The region the snapshot should be copied to. Defaults to us-west-2.')
-    parser.add_argument('name', help='The name of the snapshot to copy (e.g. "daily").')
+    parser.add_argument('name', help='The name of the snapshot to copy (e.g. "monitoring").')
     parser.add_argument('keep', help='The number of snapshots to keep (e.g. 7).')
     args = parser.parse_args()
     return args
