@@ -1,6 +1,8 @@
 #!/usr/bin/python
 import argparse
 import boto
+import boto.ec2
+import boto.ec2.cloudwatch
 import getpass
 import logging
 import os
@@ -70,11 +72,11 @@ def get_url(url):
             
 """Call a boto connection function using the AWS environment variables. This supports both
 ordinary and delegated credentials"""
-def connect_to_aws(f, creds):
+def connect_to_aws(f, region, creds):
     if ('AWS_DELEGATION_TOKEN' in creds):
-        return f(creds['AWS_ACCESS_KEY'], creds['AWS_SECRET_KEY'], security_token = creds['AWS_DELEGATION_TOKEN'])
+        return f(region, aws_access_key_id = creds['AWS_ACCESS_KEY'], aws_secret_access_key = creds['AWS_SECRET_KEY'], security_token = creds['AWS_DELEGATION_TOKEN'])
     else:
-        return f(creds['AWS_ACCESS_KEY'], creds['AWS_SECRET_KEY'])
+        return f(region, aws_access_key_id = creds['AWS_ACCESS_KEY'], aws_secret_access_key = creds['AWS_SECRET_KEY'])
 
 """Get temporary AWS credentials"""
 def get_aws_credentials(access_key, secret_key):
@@ -98,6 +100,7 @@ def parse_commandline():
     parser.add_argument('--kernel', help='Specifies the ID of the kernel to launch the new instance with. Defaults to the same kernel as the current instance.')
     parser.add_argument('--key', metavar='KEYPAIR', dest='key_name', help='Specifies the name of the key pair to use when launching the new instance. Defaults to the same key pair as the current instance.')
     parser.add_argument('--group', metavar='GROUP', dest='security_group', help='Specifies the security group within which the new instance should be run. Defaults to the same security group as the current instance.')
+    parser.add_argument('--region', default='us-east-1', help='The region the instance is in. Defaults to us-east-1.')
     parser.add_argument('--size', help='The size of the volume, in GiBs. Defaults to the same size as the snapshot.')
     parser.add_argument('--snapshot', help='The snapshot to use. Defaults to the most recent snapshot.')    
     parser.add_argument('--verbose', action='store_true', help='Turns on verbose logging.')    
@@ -244,8 +247,8 @@ def main():
     print_and_log('                  EIP: {0}'.format(ip_address))
 
     # Connect to AWS    
-    ec2 = connect_to_aws(boto.connect_ec2, credentials)
-    cw = connect_to_aws(boto.connect_cloudwatch, credentials)    
+    ec2 = connect_to_aws(boto.ec2.connect_to_region, args.region, credentials)
+    cw = connect_to_aws(boto.ec2.cloudwatch.connect_to_region, args.region, credentials)    
     
     # Find the EIP for that address    
     eip = retry(lambda: ec2.get_all_addresses(filters={'public-ip': ip_address}))[0]
