@@ -46,7 +46,7 @@ def main(args):
     args = parse_commandline()
     time = datetime.utcnow().isoformat()
     rds = connect_to_rds(args.region)
-    snapshot_id = '%s-%s' % (args.instance, datetime.utcnow().strftime('%Y-%m-%d'))
+    snapshot_id = '%s-%s' % (args.instance, datetime.utcnow().strftime('%Y-%m-%dT%H%MZ'))
     print 'making backup of %s (%s)' % (args.instance, snapshot_id)
     snapshot = rds.create_dbsnapshot(snapshot_id, args.instance)
     old_snapshots = retry(lambda: rds.get_all_dbsnapshots(instance_id=args.instance))
