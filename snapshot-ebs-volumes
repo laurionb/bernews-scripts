@@ -13,6 +13,11 @@ from operator import attrgetter
 def get_instance_id():
     return urllib2.urlopen('http://169.254.169.254/latest/meta-data/instance-id').read()
 
+def get_instance_region():
+    az = urllib2.urlopen('http://instance-data/latest/meta-data/placement/availability-zone').read()
+    region = az[:-1]
+    return region
+
 """Call a function, retrying on failures"""
 def retry(f, retries=3):
     failures = 0
@@ -40,7 +45,7 @@ def connect_to_ec2(region):
 def parse_commandline():
     parser = argparse.ArgumentParser(description='Take a snapshot of EBS volumes')
     parser.add_argument('--instance', help='The instance the volume(s) are attached to. Defaults to the current instance.')
-    parser.add_argument('--region', default='us-east-1', help='The region the instance is in. Defaults to us-east-1.')
+    parser.add_argument('--region', help='The region the instance is in. Defaults to the region the instance is in.')
     parser.add_argument('type', help='The type of snapshot (e.g. "daily").')
     parser.add_argument('keep', help='The number of snapshots to keep (e.g. 7).')
     args = parser.parse_args()
@@ -49,13 +54,15 @@ def parse_commandline():
 def main(args):
     args = parse_commandline()
     time = datetime.utcnow().isoformat()
+    if (None == args.region):
+        args.region = get_instance_region()
     ec2 = connect_to_ec2(args.region)
     if (None == args.instance):
         os.system('/bin/sync')
         instance_id = get_instance_id()
     else:
         instance_id = retry(lambda: ec2.get_all_instances(filters={'tag:Name': args.instance, 'instance-state-name': 'running'}))[0].instances[0].id
-    print 'making backup of type %s, keeping %s for instance %s' % (args.type, args.keep, instance_id)
+    print 'making backup of type %s, keeping %s for instance %s in region %s' % (args.type, args.keep, instance_id, args.region)
     volumes = retry(lambda: ec2.get_all_volumes(filters={'attachment.instance-id': instance_id}))
     for v in volumes:
          print 'volume %s is attached' % v.id
