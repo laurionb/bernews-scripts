@@ -1,0 +1,61 @@
+#!/usr/bin/python
+import argparse
+import boto
+import boto.rds
+import os
+import sys
+import time
+import urllib2
+
+from datetime import datetime
+from operator import attrgetter
+
+"""Call a function, retrying on failures"""
+def retry(f, retries=3):
+    failures = 0
+    while True:
+        try:
+            result = f()            
+            return result
+        except Exception as e:
+            failures = failures + 1
+            if failures > retries:
+                raise         
+            time.sleep(1)    
+    
+"""Call a boto connection function using the AWS environment variables. This supports both
+ordinary and delegated credentials"""
+def connect_to_rds(region):
+    if (None <> os.environ.get('AWS_DELEGATION_TOKEN')):
+        return boto.rds.connect_to_region(region, aws_access_key_id=os.environ['AWS_ACCESS_KEY'], aws_secret_access_key=os.environ['AWS_SECRET_KEY'], security_token = os.environ['AWS_DELEGATION_TOKEN'])
+    elif (None <> os.environ.get('AWS_ACCESS_KEY')):
+        return boto.rds.connect_to_region(region, aws_access_key_id=os.environ['AWS_ACCESS_KEY'], aws_secret_access_key=os.environ['AWS_SECRET_KEY'])
+    else:
+        return boto.rds.connect_to_region(region)
+
+"""Parse the commandline"""
+def parse_commandline():
+    parser = argparse.ArgumentParser(description='Take a snapshot of an RDS instance')
+    parser.add_argument('--region', default='us-east-1', help='The region the instance is in. Defaults to us-east-1.')
+    parser.add_argument('instance', help='The name of the instance to backup (e.g. "production").')
+    #parser.add_argument('keep', help='The number of snapshots to keep (e.g. 7).')
+    args = parser.parse_args()
+    return args
+
+def main(args):
+    args = parse_commandline()
+    time = datetime.utcnow().isoformat()
+    rds = connect_to_rds(args.region)
+    snapshot_id = '%s-%s' % (args.instance, datetime.utcnow().strftime('%Y-%m-%d'))
+    print 'making backup of %s (%s)' % (args.instance, snapshot_id)
+    snapshot = rds.create_dbsnapshot(snapshot_id, args.instance)
+    old_snapshots = retry(lambda: rds.get_all_dbsnapshots(instance_id=args.instance))
+    sorted_snapshots = sorted(old_snapshots, key=attrgetter('snapshot_create_time'))
+    filtered_snapshots = [x for x in sorted_snapshots if 'available' == x.status and not x.id.startswith('rds:')]
+    for s in filtered_snapshots:
+        print '%s %s %s' % (s.id, s.snapshot_create_time, s.status)
+    snapshot.update(validate=True)
+    print '%s %s %s' % (snapshot.id, snapshot.snapshot_create_time, snapshot.status)
+
+if __name__ == "__main__":
+    main(sys.argv)
