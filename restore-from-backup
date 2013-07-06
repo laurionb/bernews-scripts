@@ -6,6 +6,7 @@ import boto.ec2.cloudwatch
 import getpass
 import logging
 import os
+import random
 import socket
 import string
 import sys
@@ -96,6 +97,7 @@ def parse_commandline():
     parser.add_argument('--aws-access-key', metavar='KEY', help='AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).')
     parser.add_argument('--aws-secret-key', metavar='KEY', help='AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).')
     parser.add_argument('--availability-zone', metavar='ZONE', help='Specifies the availability zone to launch the new instance in. Defaults to the same availability zone as the current instance.')
+    parser.add_argument('--failover', action='store_true', help='Pick a different availability zone to launch the new instance in.')    
     parser.add_argument('--instance-type', metavar='TYPE', help='The type of instance to create. Defaults to the same type as the current instance.')
     parser.add_argument('--kernel', help='Specifies the ID of the kernel to launch the new instance with. Defaults to the same kernel as the current instance.')
     parser.add_argument('--key', metavar='KEYPAIR', dest='key_name', help='Specifies the name of the key pair to use when launching the new instance. Defaults to the same key pair as the current instance.')
@@ -128,6 +130,13 @@ def get_ip_address(hostname):
     ip_address = retry(lambda: socket.gethostbyname(hostname))
     logger.debug('{0} has IP address {1}'.format(hostname, ip_address))
     return ip_address
+
+"""Enumerate all availability zones and pick a healthy one."""
+def get_failover_az(ec2, current_az):
+    zones = retry(lambda: ec2.get_all_zones())
+    available_zones = [z for z in zones if 'available' == z.state]
+    failover_zones = [z for z in available_zones if z.name != current_az]
+    return (random.choice(failover_zones)).name
 
 """Validate the arguments that will be used to launch a new instance"""    
 def validate_args(ec2, args):
@@ -293,6 +302,11 @@ def main():
     print_and_log('      Snapshot Status: {0}'.format(snapshot.status))
     print_and_log('        Snapshot Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': snapshot.id})))))
 
+    # Get a failover AZ if necessary
+    if None == args.availability_zone and args.failover:
+        logger.debug('Getting failover AZ')
+        args.availability_zone = get_failover_az(ec2, old_instance.placement)
+        
     # Get the default arguments
     logger.debug('args before defaults applied: {0}'.format(args))
     args.instance_type = args.instance_type or old_instance.instance_type
