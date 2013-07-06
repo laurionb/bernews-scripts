@@ -222,7 +222,6 @@ def add_ephemeral_drives_to_block_map(block_map):
     block_map['/dev/sdc1'] = sdc1
     block_map['/dev/sdd1'] = sdd1
     block_map['/dev/sde1'] = sde1
-
     
 def main():
     args = parse_commandline()
@@ -237,6 +236,7 @@ def main():
     print_and_log('Time: {0}'.format(time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())))
     
     args = get_env_vars(args)            
+    print_and_log('Region: {0}'.format(args.region))
         
     credentials = get_aws_credentials(args.aws_access_key, args.aws_secret_key)
 
