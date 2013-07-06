@@ -1,0 +1,301 @@
+#!/usr/bin/python
+import argparse
+import boto
+import boto.ec2
+import boto.ec2.cloudwatch
+import getpass
+import logging
+import os
+import socket
+import string
+import sys
+import time
+import urllib2
+
+from boto.ec2.blockdevicemapping import EBSBlockDeviceType, BlockDeviceMapping, BlockDeviceType
+from datetime import datetime
+from operator import attrgetter
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# format with the time
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+# log to a file
+fh = logging.FileHandler('aws.log')
+fh.setLevel(logging.DEBUG)
+fh.setFormatter(formatter)
+logger.addHandler(fh)
+# also log boto errors to the file
+logging.getLogger('boto').addHandler(fh)
+
+"""Generate a beep sound"""
+def beep():
+    print '\a'
+    
+"""Prints a string to the console and logs it"""
+def print_and_log(s):
+    print s
+    logger.info(s)
+
+"""Prints a string to the console and logs it"""
+def print_error_and_log(s):
+    print 'ERROR: ' + s
+    logger.error(s)
+    
+"""Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
+def prompt(p):
+    beep()
+    i = raw_input('### ' + p + '. Press ENTER to continue. ### ').lower()
+    if str.startswith(i, 'q') or str.startswith(i, 'n'):
+        raise Exception('Cancelled')
+    
+"""Call a function, retrying on failures"""
+def retry(f, retries=1):
+    failures = 0
+    while True:
+        try:
+            result = f()            
+            return result
+        except Exception as e:
+            failures = failures + 1
+            if failures > retries:
+                print_and_log('Failed after {0} retries'.format(failures))
+                logger.error('Failed after {0} retries with exception {1}'.format(failures, e))
+                raise         
+            logger.warning('Got exception {0} ({1} failures total). Retrying...'.format(e.__class__.__name__, failures))
+            time.sleep(2)
+
+def get_url(url):
+    logger.debug('Getting {0}'.format(url))
+    data = retry(lambda: urllib2.urlopen(url, timeout=10).read(), retries=150)
+    print_and_log('Got {0} bytes of data from {1}'.format(len(data), url))
+            
+"""Call a boto connection function using the AWS environment variables. This supports both
+ordinary and delegated credentials"""
+def connect_to_aws(f, region, creds):
+    if ('AWS_DELEGATION_TOKEN' in creds):
+        return f(region, aws_access_key_id = creds['AWS_ACCESS_KEY'], aws_secret_access_key = creds['AWS_SECRET_KEY'], security_token = creds['AWS_DELEGATION_TOKEN'])
+    else:
+        return f(region, aws_access_key_id = creds['AWS_ACCESS_KEY'], aws_secret_access_key = creds['AWS_SECRET_KEY'])
+
+"""Get temporary AWS credentials"""
+def get_aws_credentials(access_key, secret_key):
+    iam = boto.connect_iam(access_key, secret_key)
+    user = retry(lambda: iam.get_user(), 2)['get_user_response']['get_user_result']['user']['user_name']
+    mfa_serial_number = retry(lambda: iam.get_all_mfa_devices(user))['list_mfa_devices_response']['list_mfa_devices_result']['mfa_devices'][0]['serial_number']
+    print 'Enter the MFA token for MFA device {0} (user: {1})'.format(mfa_serial_number, user) # just print to the console, no logging
+    mfa_token = getpass.getpass('Token: ')
+    sts = boto.connect_sts(access_key, secret_key)
+    token = retry(lambda: sts.get_session_token(duration = 3600, force_new = True, mfa_serial_number = mfa_serial_number, mfa_token = mfa_token), 2)
+    creds = {'AWS_ACCESS_KEY': token.access_key, 'AWS_SECRET_KEY': token.secret_key, 'AWS_DELEGATION_TOKEN': token.session_token}
+    return creds
+
+"""Parse the commandline"""
+def parse_commandline():
+    parser = argparse.ArgumentParser(description='Create an AMI and copy it to another region.')
+    parser.add_argument('--aws-access-key', metavar='KEY', help='AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).')
+    parser.add_argument('--aws-secret-key', metavar='KEY', help='AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).')
+    parser.add_argument('--kernel', help='Specifies the ID of the kernel to launch the new instance with. Defaults to the same kernel as the current instance.')
+    parser.add_argument('--source-region', default='us-east-1', help='The region the instance(s) are in. Defaults to us-east-1.')
+    parser.add_argument('--dest-region', default='us-west-2', help='The region the AMI should be copied to. Defaults to us-west-2.')
+    parser.add_argument('--size', help='The size of the volume, in GiBs. Defaults to the same size as the snapshot.')
+    parser.add_argument('--snapshot', help='The snapshot to use. Defaults to the most recent snapshot.')    
+    parser.add_argument('--verbose', action='store_true', help='Turns on verbose logging.')    
+    parser.add_argument('host',  nargs='+', help='The DNS name of the instance to create the AMI from')
+    args = parser.parse_args()
+    logger.info(args)
+    return args
+    
+"""Get environment variables that can be used to fill in missing arguments"""    
+def get_env_vars(args):
+    if (None == args.aws_access_key):
+        if ('AWS_ACCESS_KEY' in os.environ):
+            args.aws_access_key = os.environ['AWS_ACCESS_KEY']
+        else:
+            sys.exit('AWS Access Key ID not specified')
+    if (None == args.aws_secret_key):
+        if ('AWS_SECRET_KEY' in os.environ):
+            args.aws_secret_key = os.environ['AWS_SECRET_KEY']
+        else:
+            sys.exit('AWS Secret Access Key not specified')
+    return args
+    
+"""Turn a hostname into an IP address"""
+def get_ip_address(hostname):
+    ip_address = retry(lambda: socket.gethostbyname(hostname))
+    logger.debug('{0} has IP address {1}'.format(hostname, ip_address))
+    return ip_address
+
+"""Validate the arguments that will be used to launch a new instance"""    
+def validate_args(args):
+    if args.size < 8:
+        raise Exception('Size {0} is too small'.format(args.size))
+        
+"""Tag a resource"""            
+def tag_resource(ec2, resource_id, tags):
+    logger.debug('Tagging {0} with {1}'.format(resource_id, tags))
+    retry(lambda: ec2.create_tags([resource_id], tags))
+    logger.debug('Tagged {0} with {1}'.format(resource_id, tags))
+    
+"""Format tags as a string"""    
+def format_tags(tags):
+    return ','.join(['{0}:{1}'.format(t.name,t.value) for t in tags])
+
+"""Add ephemeral drives to the block mapping list. We rely on the fact that these
+are ignored if the ephemeral drives don't exist."""    
+def add_ephemeral_drives_to_block_map(block_map):
+    sdb1 = BlockDeviceType()
+    sdc1 = BlockDeviceType()
+    sdd1 = BlockDeviceType()
+    sde1 = BlockDeviceType()
+    sdb1.ephemeral_name = 'ephemeral0'
+    sdc1.ephemeral_name = 'ephemeral1'
+    sdd1.ephemeral_name = 'ephemeral2'
+    sde1.ephemeral_name = 'ephemeral3'
+    block_map['/dev/sdb1'] = sdb1
+    block_map['/dev/sdc1'] = sdc1
+    block_map['/dev/sdd1'] = sdd1
+    block_map['/dev/sde1'] = sde1
+    
+def main():
+    args = parse_commandline()
+    
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger('boto').setLevel(logging.INFO)
+        logger.debug('Verbose logging enabled')
+    
+    date = datetime.utcnow().isoformat()
+    logger.debug('date = {0}'.format(date))
+    print_and_log('Time: {0}'.format(time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())))
+    
+    args = get_env_vars(args)            
+        
+    credentials = get_aws_credentials(args.aws_access_key, args.aws_secret_key)
+    
+    for host in args.host:
+        print_and_log('*** Restoring latest backup of {0}:'.format(host))
+        
+        # Get the IP address of the host we are going to restore
+        ip_address = get_ip_address(host)
+        print_and_log('                  EIP: {0}'.format(ip_address))
+
+        # Connect to AWS    
+        ec2_source = connect_to_aws(boto.ec2.connect_to_region, args.source_region, credentials)
+        ec2_dest = connect_to_aws(boto.ec2.connect_to_region, args.dest_region, credentials)
+        
+        # Find the EIP for that address    
+        eip = retry(lambda: ec2_source.get_all_addresses(filters={'public-ip': ip_address}))[0]
+        instance_id = eip.instance_id
+        print_and_log('             Instance: {0}'.format(instance_id))
+
+        # Get information about the instance
+        instance_name = retry(lambda: ec2_source.get_all_tags(filters={'resource-id': instance_id, 'key': 'Name'}))[0].value
+        print_and_log('                 Name: {0}'.format(instance_name))
+        
+        instance = retry(lambda: ec2_source.get_all_instances([instance_id]))[0].instances[0]
+        print_and_log('                State: {0}'.format(instance.state))
+        print_and_log('        Instance Type: {0}'.format(instance.instance_type))
+        print_and_log('    Availability Zone: {0}'.format(instance.placement))
+        print_and_log('               Kernel: {0}'.format(instance.kernel))
+        print_and_log('       Security Group: {0}'.format(instance.groups[0].name))
+        print_and_log('              SSH Key: {0}'.format(instance.key_name))
+        print_and_log('                 Tags: {0}'.format(format_tags(retry(lambda: ec2_source.get_all_tags(filters={'resource-id': instance.id})))))
+        
+        volume = retry(lambda: ec2_source.get_all_volumes(filters={'attachment.instance-id': instance_id}))[0]
+        print_and_log('               Volume: {0}'.format(volume.id))
+        print_and_log('        Volume Status: {0}'.format(volume.status))
+        print_and_log('          Volume Size: {0}'.format(volume.size))
+        print_and_log('          Volume Tags: {0}'.format(format_tags(retry(lambda: ec2_source.get_all_tags(filters={'resource-id': volume.id})))))
+
+        # Find the snapshot to restore
+        if None == args.snapshot:
+            logger.debug('Finding most recent snapshot')
+            snapshots = retry(lambda: ec2_source.get_all_snapshots(filters={'tag:Name': instance_name, 'status': 'completed'}))
+            snapshots = sorted(snapshots, key=attrgetter('start_time'), reverse=True)
+            logger.debug(snapshots)
+        else:
+            logger.debug('Finding user-specified snapshot {0}'.format(args.snapshot))
+            snapshots = retry(lambda: ec2_source.get_all_snapshots([args.snapshot]))
+        snapshot = snapshots[0]    
+
+        print ''
+        print_and_log('*** Backup:')
+        print_and_log('             Snapshot: {0} \'{1}\''.format(snapshot.id, snapshot.description))
+        print_and_log('        Snapshot Size: {0}'.format(snapshot.volume_size))    
+        print_and_log('        Snapshot Date: {0}'.format(snapshot.start_time))
+        print_and_log('      Snapshot Status: {0}'.format(snapshot.status))
+        print_and_log('        Snapshot Tags: {0}'.format(format_tags(retry(lambda: ec2_source.get_all_tags(filters={'resource-id': snapshot.id})))))
+
+        # Get the default arguments
+        logger.debug('args before defaults applied: {0}'.format(args))
+        args.kernel = args.kernel or instance.kernel
+        args.size = args.size or snapshot.volume_size
+        logger.debug('args after defaults applied: {0}'.format(args))
+
+        # AMI parameters
+        print ''
+        print_and_log('*** AMI parameters:')
+        print_and_log('               Kernel: {0}'.format(args.kernel))
+        print_and_log('          Volume Size: {0}'.format(args.size))
+         
+        # Validate AMI parameters
+        print ''
+        print_and_log('*** Validating AMI parameters...')
+        validate_args(args)
+        
+        # Tags to apply to new AMI
+        tags = {
+            'Name': instance_name,
+            'Date': date,
+            'Kernel': args.kernel,
+            'Snapshot': '{0} ({1})'.format(snapshot.id, snapshot.start_time),
+            'OldInstance': '{0}/{1}'.format(instance.id, volume.id),
+            'CreatedBy': getpass.getuser()}
+        logger.debug('tags={0}'.format(tags))
+                
+        ami = None
+        
+        # Create the AMI. If anything fails here we want to delete the AMI 
+        # in the source region
+        try:    
+            ami_name = '{0}-{1}'.format(instance_name, snapshot.id)
+            ami_description = '{0} from snapshot {1} ({2})'.format(instance_name, snapshot.id, snapshot.start_time)
+            
+            print_and_log('             AMI Name: {0}'.format(ami_name))
+            print_and_log('      AMI Description: {0}'.format(ami_description))    
+            
+            # AMI
+            logger.debug('Registering the AMI')
+            ebs = EBSBlockDeviceType()
+            ebs.snapshot_id = snapshot.id
+            ebs.size = args.size
+            ebs.delete_on_termination = True
+            block_map = BlockDeviceMapping()
+            block_map['/dev/sda1'] = ebs
+            add_ephemeral_drives_to_block_map(block_map)
+            logger.debug(block_map)
+            ami = retry(lambda: ec2_source.register_image(
+                ami_name,
+                ami_description,
+                architecture='x86_64',
+                kernel_id=args.kernel,
+                root_device_name='/dev/sda1',
+                block_device_map=block_map))
+            print_and_log('                  AMI: {0}'.format(ami))
+            tag_resource(ec2_source, ami, tags)
+
+            print_and_log('*** Copying the AMI...')
+            x = ec2_dest.copy_image(args.source_region, ami, ami_name, description=ami_description)  
+            print x
+            
+        finally:
+            # We always want to get rid of the AMI in the source region
+            if ami:
+                print_and_log('Deregistering {0}'.format(ami))
+                retry(lambda: ec2_source.deregister_image(ami))
+    
+    beep()
+    
+if __name__ == "__main__":
+    main()
