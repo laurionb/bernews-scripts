@@ -1,14 +1,17 @@
 #!/usr/bin/python
+import argparse
 import boto
 import getpass
+import os
 import sys
 
-if (len(sys.argv) <> 3):
-    print 'Usage ' + sys.argv[0] + ' access_key secret_key'
-    exit(1)
+parser = argparse.ArgumentParser(description='Get IAM token')
+parser.add_argument('--aws-access-key', metavar='KEY', help='AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).')
+parser.add_argument('--aws-secret-key', metavar='KEY', help='AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).')
+args = parser.parse_args()
 
-access_key = sys.argv[1]
-secret_key = sys.argv[2]
+access_key = args.aws_access_key or os.environ['AWS_ACCESS_KEY']
+secret_key = args.aws_secret_key or os.environ['AWS_SECRET_KEY']
 
 iam = boto.connect_iam(access_key, secret_key)
 response = iam.get_user()
