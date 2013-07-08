@@ -1,0 +1,13 @@
+#!/bin/bash
+set -e
+# Amazon Linux 2013.03, instance-store, 64-bit, us-west-2
+AMI=ami-5359cf63
+USER_DATA_FILE=`/bin/mktemp --tmpdir --dry-run ec2-user-data.XXXXXXXX`
+PRICE=0.10
+INSTANCE_TYPE=m1.xlarge
+START_TIME=`/bin/date +%FT%H:%M:%S --utc --date='+5 minute'`
+END_TIME=`/bin/date +%FT%H:%M:%S --utc --date='+1 day'`
+ec2-describe-images ${AMI} --region us-west-2
+/bin/sed "s/^NAME=.*$/NAME=$1/" archive-to-glacier > ${USER_DATA_FILE}
+ec2-request-spot-instances --region us-west-2 --user-data-file ${USER_DATA_FILE} --group archive --key bernews_us_west_oregon --instance-count 1 --price ${PRICE} --type one-time --instance-type ${INSTANCE_TYPE} --iam-profile arn:aws:iam::150609428075:instance-profile/ArchiveToGlacier --valid-from ${START_TIME} --valid-until ${END_TIME} ${AMI}
+/bin/rm ${USER_DATA_FILE}
