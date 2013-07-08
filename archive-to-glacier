@@ -1,6 +1,10 @@
 #!/bin/bash
 NAME=bernews
 
+export PATH=/usr/local/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/opt/aws/bin:/root/bin
+export EC2_HOME=/opt/aws/apitools/ec2
+export JAVA_HOME=/usr/lib/jvm/jre
+
 # Arguments are message, subject
 publish_to_sns() {
     ARN=arn:aws:sns:us-east-1:150609428075:bernews-low-priority
@@ -14,6 +18,8 @@ DEVICE=/dev/xvdf
 INSTANCE=`ec2-metadata --instance-id | awk '{print $2}'`
 AZ=`ec2-metadata --availability-zone | awk '{print $2}'`
 REGION=`echo ${AZ} | sed 's/\(.*\).$/\1/'`
+
+publish_to_sns "archiving latest snapshot of ${NAME} to Glacier from ${INSTANCE} in ${REGION}" "${NAME}: archive to Glacier started (${DATE})"
 
 # Print the arguments
 echo "    Name: ${NAME}"
@@ -47,10 +53,10 @@ ec2-describe-volumes ${VOLUME} --hide-tags --region ${REGION}
 ec2-attach-volume ${VOLUME} --instance ${INSTANCE} --device ${DEVICE} --region ${REGION}
 
 # Wait for the volume to be attached
-STATUS=`ec2-describe-volumes ${VOLUME} --hide-tags --region ${REGION} | grep VOLUME | cut -f6`
-while [[ "${STATUS}" != "in-use" ]]; do
+STATUS=`ec2-describe-volumes ${VOLUME} --hide-tags --region ${REGION} | grep ATTACHMENT | cut -f5`
+while [[ "${STATUS}" != "attached" ]]; do
     sleep 10
-    STATUS=`ec2-describe-volumes ${VOLUME} --hide-tags --region ${REGION} | grep VOLUME | cut -f6`
+    STATUS=`ec2-describe-volumes ${VOLUME} --hide-tags --region ${REGION} | grep ATTACHMENT | cut -f5`
 done
 ec2-describe-volumes ${VOLUME} --hide-tags --region ${REGION}
 
@@ -112,8 +118,9 @@ if [ $? -ne 0 ]; then
 fi
 
 # Send a success message
-MESSAGE="A ${ARCHIVE_SIZE} backup of ${SNAPSHOT} (${SNAPSHOT_DESCRIPTION}) was uploaded to Glacier vault ${VAULT} in ${REGION} on ${DATE} (instance:${INSTANCE},volume:${VOLUME},az:${AZ},device:${DEVICE})"
-SUBJECT="${NAME}: archived to glacier (${DATE})"
+END_DATE=`date +%FT%H%M%S`
+MESSAGE="A ${ARCHIVE_SIZE} backup of ${SNAPSHOT} (${SNAPSHOT_DESCRIPTION}) was uploaded to Glacier vault ${VAULT} in ${REGION} on ${END_DATE} (instance:${INSTANCE},volume:${VOLUME},az:${AZ},device:${DEVICE},date:${DATE})"
+SUBJECT="${NAME}: archive to Glacier completed (${DATE})"
 publish_to_sns "${MESSAGE}" "${SUBJECT}"
 
 # Now terminate this instance
