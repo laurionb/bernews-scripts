@@ -78,7 +78,8 @@ df -h ${MOUNTPOINT}
 # Copy the contents to the ephemeral drive
 echo "++++ archive"
 LOCAL=/media/ephemeral0
-ARCHIVE=${LOCAL}/${SNAPSHOT}.tar.gz
+TARFILE=${SNAPSHOT}.tar.gz
+ARCHIVE=${LOCAL}/${TARFILE}
 time tar -cvzf ${ARCHIVE} ${MOUNTPOINT} --exclude=${MOUNTPOINT}/var/www/html/tv
 if [ $? -ne 0 ]; then
     publish_to_sns "tar of ${MOUNTPOINT} failed" "tar failure"
@@ -89,9 +90,9 @@ ARCHIVE_SIZE=`ls -l -h ${ARCHIVE} | awk '{print $5}'`
 
 # Upload to Glacier
 echo "++++ upload to Glacier"
-PYTHON_SCRIPT="import boto.glacier,datetime,sys;print boto.glacier.connect_to_region(sys.argv[1]).create_vault(sys.argv[2]).concurrent_create_archive_from_file(sys.argv[3],sys.argv[3]+':'+sys.argv[4])"
+PYTHON_SCRIPT="import boto.glacier,datetime,sys;print boto.glacier.connect_to_region(sys.argv[1]).create_vault(sys.argv[2]).concurrent_create_archive_from_file(sys.argv[3],sys.argv[4])"
 VAULT="${NAME}-${DATE}-${SNAPSHOT}"
-time python -c "${PYTHON_SCRIPT}" ${REGION} ${VAULT} ${ARCHIVE} "${SNAPSHOT_DESCRIPTION}"
+time python -c "${PYTHON_SCRIPT}" ${REGION} ${VAULT} ${ARCHIVE} "${TARFILE}: ${SNAPSHOT_DESCRIPTION}"
 if [ $? -ne 0 ]; then
     publish_to_sns "unable to upload ${ARCHIVE} (${ARCHIVE_SIZE},${SNAPSHOT_DESCRIPTION}) to Glacier vault ${VAULT} in ${REGION} from ${INSTANCE}" "glacier upload failure"
     exit 1
