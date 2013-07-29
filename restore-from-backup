@@ -17,41 +17,46 @@ from boto.ec2.blockdevicemapping import EBSBlockDeviceType, BlockDeviceMapping, 
 from datetime import datetime
 from operator import attrgetter
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-# format with the time
-formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
-# log to a file
-fh = logging.FileHandler('aws.log')
-fh.setLevel(logging.DEBUG)
-fh.setFormatter(formatter)
-logger.addHandler(fh)
-# also log boto errors to the file
-logging.getLogger('boto').addHandler(fh)
+logger = None
 
-"""Generate a beep sound"""
+def setup_logging():
+    """Setup out logging. Must be called before any logging."""
+    global logger
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    # format with the time
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+    # log to a file
+    fh = logging.FileHandler('aws.log')
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+    # also log boto errors to the file
+    logging.getLogger('boto').addHandler(fh)
+
 def beep():
+    """Generate a beep sound"""
     print '\a'
     
-"""Prints a string to the console and logs it"""
 def print_and_log(s):
+    """Prints a string to the console and logs it"""
     print s
     logger.info(s)
 
-"""Prints a string to the console and logs it"""
 def print_error_and_log(s):
+    """Prints a string to the console and logs it"""
     print 'ERROR: ' + s
     logger.error(s)
     
-"""Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
 def prompt(p):
+    """Print a prompt to the screen. If the user enters q or n then an exception is thrown"""
     beep()
     i = raw_input('### ' + p + '. Press ENTER to continue. ### ').lower()
     if str.startswith(i, 'q') or str.startswith(i, 'n'):
         raise Exception('Cancelled')
     
-"""Call a function, retrying on failures"""
 def retry(f, retries=1):
+    """Call a function, retrying on failures"""
     failures = 0
     while True:
         try:
@@ -67,20 +72,20 @@ def retry(f, retries=1):
             time.sleep(2)
 
 def get_url(url):
+    """Retrieve the contents of a url."""
     logger.debug('Getting {0}'.format(url))
     data = retry(lambda: urllib2.urlopen(url, timeout=10).read(), retries=150)
     print_and_log('Got {0} bytes of data from {1}'.format(len(data), url))
             
-"""Call a boto connection function using the AWS environment variables. This supports both
-ordinary and delegated credentials"""
 def connect_to_aws(f, region, creds):
+    """Call a boto connection function using the AWS environment variables. This supports both ordinary and delegated credentials"""
     if ('AWS_DELEGATION_TOKEN' in creds):
         return f(region, aws_access_key_id = creds['AWS_ACCESS_KEY'], aws_secret_access_key = creds['AWS_SECRET_KEY'], security_token = creds['AWS_DELEGATION_TOKEN'])
     else:
         return f(region, aws_access_key_id = creds['AWS_ACCESS_KEY'], aws_secret_access_key = creds['AWS_SECRET_KEY'])
 
-"""Get temporary AWS credentials"""
 def get_aws_credentials(access_key, secret_key):
+    """Get temporary AWS credentials"""
     iam = boto.connect_iam(access_key, secret_key)
     user = retry(lambda: iam.get_user(), 2)['get_user_response']['get_user_result']['user']['user_name']
     mfa_serial_number = retry(lambda: iam.get_all_mfa_devices(user))['list_mfa_devices_response']['list_mfa_devices_result']['mfa_devices'][0]['serial_number']
@@ -91,8 +96,8 @@ def get_aws_credentials(access_key, secret_key):
     creds = {'AWS_ACCESS_KEY': token.access_key, 'AWS_SECRET_KEY': token.secret_key, 'AWS_DELEGATION_TOKEN': token.session_token}
     return creds
 
-"""Parse the commandline"""
 def parse_commandline():
+    """Parse the commandline"""
     parser = argparse.ArgumentParser(description='Clone an EC2 machine from its most recent backup.')
     parser.add_argument('--aws-access-key', metavar='KEY', help='AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).')
     parser.add_argument('--aws-secret-key', metavar='KEY', help='AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).')
@@ -101,7 +106,7 @@ def parse_commandline():
     parser.add_argument('--instance-type', metavar='TYPE', help='The type of instance to create. Defaults to the same type as the current instance.')
     parser.add_argument('--kernel', help='Specifies the ID of the kernel to launch the new instance with. Defaults to the same kernel as the current instance.')
     parser.add_argument('--key', metavar='KEYPAIR', dest='key_name', help='Specifies the name of the key pair to use when launching the new instance. Defaults to the same key pair as the current instance.')
-    parser.add_argument('--group', metavar='GROUP', dest='security_group', help='Specifies the security group within which the new instance should be run. Defaults to the same security group as the current instance.')
+    parser.add_argument('--group', metavar='GROUP', dest='security_groups', help='Specifies the security group(s) within which the new instance should be run. Defaults to the same security group(s) as the current instance.')
     parser.add_argument('--region', default='us-east-1', help='The region the instance is in. Defaults to us-east-1.')
     parser.add_argument('--size', help='The size of the volume, in GiBs. Defaults to the same size as the snapshot.')
     parser.add_argument('--snapshot', help='The snapshot to use. Defaults to the most recent snapshot.')    
@@ -111,8 +116,8 @@ def parse_commandline():
     logger.info(args)
     return args
     
-"""Get environment variables that can be used to fill in missing arguments"""    
 def get_env_vars(args):
+    """Get environment variables that can be used to fill in missing arguments"""    
     if (None == args.aws_access_key):
         if ('AWS_ACCESS_KEY' in os.environ):
             args.aws_access_key = os.environ['AWS_ACCESS_KEY']
@@ -125,21 +130,21 @@ def get_env_vars(args):
             sys.exit('AWS Secret Access Key not specified')
     return args
     
-"""Turn a hostname into an IP address"""
 def get_ip_address(hostname):
+    """Turn a hostname into an IP address"""
     ip_address = retry(lambda: socket.gethostbyname(hostname))
     logger.debug('{0} has IP address {1}'.format(hostname, ip_address))
     return ip_address
 
-"""Enumerate all availability zones and pick a healthy one."""
 def get_failover_az(ec2, current_az):
+    """Enumerate all availability zones and pick a healthy one."""
     zones = retry(lambda: ec2.get_all_zones())
     available_zones = [z for z in zones if 'available' == z.state]
     failover_zones = [z for z in available_zones if z.name != current_az]
     return (random.choice(failover_zones)).name
 
-"""Validate the arguments that will be used to launch a new instance"""    
 def validate_args(ec2, args):
+    """Validate the arguments that will be used to launch a new instance"""    
     try:
         z = retry(lambda: ec2.get_all_zones([args.availability_zone]))[0]
         print_and_log('    Availability zone {0} is {1}'.format(z.name, z.state))
@@ -166,17 +171,18 @@ def validate_args(ec2, args):
     except:
         print_error_and_log('Instance type {0} not found'.format(args.instance_type))
         raise
-    try:
-        retry(lambda: ec2.get_all_security_groups([args.security_group]))
-        print_and_log('    Found security group {0}'.format(args.security_group))
-    except:
-        print_error_and_log('Security group {0} not found'.format(args.security_group))
-        raise
+    for sg in args.security_groups:
+        try:
+            retry(lambda: ec2.get_all_security_groups([sg]))
+            print_and_log('    Found security group {0}'.format(sg))
+        except:
+            print_error_and_log('Security group {0} not found'.format(sg))
+            raise
     if args.size < 8:
         raise Exception('Size {0} is too small'.format(args.size))
 
-"""Call function f on all dimensions that contain match"""
 def update_cloudwatch_dimensions(dimensions, match, f):
+    """Call function f on all dimensions that contain match"""
     for (k, v) in dimensions.items():
         if isinstance(v,list):
             if -1 != string.find(v[0], match):
@@ -189,8 +195,8 @@ def update_cloudwatch_dimensions(dimensions, match, f):
 
 comp_map = {'>': 'GreaterThanThreshold', '<': 'LessThanThreshold', '<=': 'LessThanThreshold', '>=': 'GreaterThanOrEqualToThreshold'}
     
-"""Update CloudWatch alarms, updating the dimensions"""
 def update_cloudwatch_alarms(cw, old, new):
+    """Update CloudWatch alarms, updating the dimensions"""
     for alarm in retry(lambda: cw.describe_alarms()):
         alarm.comparison = comp_map[alarm.comparison]
         logger.debug(alarm)
@@ -198,27 +204,27 @@ def update_cloudwatch_alarms(cw, old, new):
             print_and_log('updating {0} ({1})'.format(alarm, alarm.dimensions))
             retry(lambda: cw.create_alarm(alarm))
 
-"""Print CloudWatch alarms with dimensions that contain the string"""
 def print_matching_cloudwatch_alarms(cw, match):
+    """Print CloudWatch alarms with dimensions that contain the string"""
     for alarm in retry(lambda: cw.describe_alarms()):
         alarm.comparison = comp_map[alarm.comparison]
         logger.debug(alarm)
         if update_cloudwatch_dimensions(alarm.dimensions, match, lambda s: s):
             print_and_log('    {0} ({1})'.format(alarm, alarm.dimensions))
             
-"""Tag a resource"""            
 def tag_resource(ec2, resource_id, tags):
+    """Tag a resource"""            
     logger.debug('Tagging {0} with {1}'.format(resource_id, tags))
     retry(lambda: ec2.create_tags([resource_id], tags))
     logger.debug('Tagged {0} with {1}'.format(resource_id, tags))
     
-"""Format tags as a string"""    
 def format_tags(tags):
+    """Format tags as a string"""    
     return ','.join(['{0}:{1}'.format(t.name,t.value) for t in tags])
 
-"""Add ephemeral drives to the block mapping list. We rely on the fact that these
-are ignored if the ephemeral drives don't exist."""    
 def add_ephemeral_drives_to_block_map(block_map):
+    """Add ephemeral drives to the block mapping list. We rely on the fact that these
+    are ignored if the ephemeral drives don't exist."""    
     sdb1 = BlockDeviceType()
     sdc1 = BlockDeviceType()
     sdd1 = BlockDeviceType()
@@ -269,11 +275,12 @@ def main():
     print_and_log('                 Name: {0}'.format(instance_name))
     
     old_instance = retry(lambda: ec2.get_all_instances([old_instance_id]))[0].instances[0]
+    old_security_groups = [x.name for x in old_instance.groups]
     print_and_log('                State: {0}'.format(old_instance.state))
     print_and_log('        Instance Type: {0}'.format(old_instance.instance_type))
     print_and_log('    Availability Zone: {0}'.format(old_instance.placement))
     print_and_log('               Kernel: {0}'.format(old_instance.kernel))
-    print_and_log('       Security Group: {0}'.format(old_instance.groups[0].name))
+    print_and_log('      Security Groups: {0}'.format(string.join(old_security_groups, ',')))
     print_and_log('              SSH Key: {0}'.format(old_instance.key_name))
     print_and_log('                 Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': old_instance.id})))))
     
@@ -313,7 +320,10 @@ def main():
     args.availability_zone = args.availability_zone or old_instance.placement
     args.kernel = args.kernel or old_instance.kernel
     args.key_name = args.key_name or old_instance.key_name
-    args.security_group = args.security_group or old_instance.groups[0].name
+    if None != args.security_groups:
+        args.security_groups = string.split(args.security_groups, ',')
+    else:
+        args.security_groups = old_security_groups
     args.size = args.size or snapshot.volume_size
     logger.debug('args after defaults applied: {0}'.format(args))
 
@@ -324,7 +334,7 @@ def main():
     print_and_log('    Availability Zone: {0}'.format(args.availability_zone))
     print_and_log('               Kernel: {0}'.format(args.kernel))
     print_and_log('              SSH Key: {0}'.format(args.key_name))
-    print_and_log('       Security Group: {0}'.format(args.security_group))
+    print_and_log('      Security Groups: {0}'.format(string.join(args.security_groups, ',')))
     print_and_log('          Volume Size: {0}'.format(args.size))
      
     # Validate launch parameters
@@ -387,7 +397,7 @@ def main():
         reservation = retry(lambda: ec2.run_instances(
             ami,
             key_name=args.key_name,
-            security_groups=[args.security_group],
+            security_groups=args.security_groups,
             instance_type=args.instance_type,
             placement=args.availability_zone,
             kernel_id=args.kernel,
@@ -399,7 +409,7 @@ def main():
         print_and_log('        Instance Type: {0}'.format(instance.instance_type))
         print_and_log('    Availability Zone: {0}'.format(instance.placement))
         print_and_log('               Kernel: {0}'.format(instance.kernel))
-        print_and_log('       Security Group: {0}'.format(instance.groups[0].name))
+        print_and_log('      Security Groups: {0}'.format(string.join([x.name for x in instance.groups], ',')))
         print_and_log('              SSH Key: {0}'.format(instance.key_name))
         tag_resource(ec2, instance.id, tags)
 
@@ -493,7 +503,7 @@ def main():
     print_and_log('        Instance Type: {0}'.format(instance.instance_type))
     print_and_log('    Availability Zone: {0}'.format(instance.placement))
     print_and_log('               Kernel: {0}'.format(instance.kernel))
-    print_and_log('       Security Group: {0}'.format(instance.groups[0].name))
+    print_and_log('      Security Groups: {0}'.format(string.join([x.name for x in instance.groups], ',')))
     print_and_log('              SSH Key: {0}'.format(instance.key_name))
     print_and_log('                 Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': instance.id})))))
 
@@ -506,5 +516,6 @@ def main():
     
     beep()
     
-if __name__ == "__main__":
+if __name__ == '__main__':
+    setup_logging()
     main()
