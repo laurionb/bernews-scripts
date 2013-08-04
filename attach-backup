@@ -95,7 +95,7 @@ def parse_commandline():
     parser = argparse.ArgumentParser(description='Attach a backup to an EC2 instance.')
     parser.add_argument('--aws-access-key', metavar='KEY', help='AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).')
     parser.add_argument('--aws-secret-key', metavar='KEY', help='AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).')
-    parser.add_argument('--device', help='The device to attach the volume to. Defaults to /dev/sdb.')
+    parser.add_argument('--device', help='The device to attach the volume to. Defaults to /dev/sdf.')
     parser.add_argument('--instance', help='The instance to attach the volume to. Defaults to the current instance.')
     parser.add_argument('--snapshot', help='The snapshot to use. Defaults to the most recent snapshot.')
     parser.add_argument('--iops', help='The number of I/O operations per second (IOPS) that the volume supports. Defaults to none.')
@@ -175,7 +175,7 @@ def main():
 
     # Get the default arguments
     logger.debug('args before defaults applied: {0}'.format(args))
-    args.device = args.device or '/dev/sdb'
+    args.device = args.device or '/dev/sdf'
     args.size = args.size or snapshot.volume_size
     args.instance = args.instance or get_instance_id()
     logger.debug('args after defaults applied: {0}'.format(args))
