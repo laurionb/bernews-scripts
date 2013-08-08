@@ -12,7 +12,7 @@ do
     if [[ $savings -gt 0 ]]
     then
         /bin/echo "Compressing ${file} saved ${savings} bytes"
-        /bin/mv --backup=numbered "${file}.optimized" "${file}"
+        /bin/mv "${file}.optimized" "${file}"
     fi
     if [[ $savings -eq 0 ]]
     then
