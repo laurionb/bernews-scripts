@@ -1,0 +1,12 @@
+#!/bin/bash
+while true
+do
+    IFS=' ' read ONEMIN FIVEMIN FIFTEENMIN PROCESSES LASTPID  < /proc/loadavg
+    if (( $(/usr/bin/bc <<< "$ONEMIN <= 4.0") == 1 ))
+    then
+        break
+    fi
+    printf 'Load is too high. Sleeping...\n'
+    /bin/sleep 60
+done
+exec $@

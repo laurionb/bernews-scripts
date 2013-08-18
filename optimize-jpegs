@@ -1,0 +1,27 @@
+#!/bin/bash
+set -e
+shopt -s globstar
+nice="/usr/bin/ionice -c 3 /bin/nice --adjustment=19"
+sudo="/usr/bin/sudo -u apache"
+for file in ./**/*.jpg
+do
+    ${nice} ${sudo} /usr/bin/jpegtran -copy none -optimize -progressive -outfile "${file}.optimized" "${file}"
+    before=$(/usr/bin/stat --format=%s "${file}")
+    after=$(/usr/bin/stat --format=%s "${file}.optimized")
+    savings=$(( $before - $after ))
+    if [[ $savings -gt 0 ]]
+    then
+        /bin/echo "Compressing ${file} saved ${savings} bytes"
+        /bin/mv "${file}.optimized" "${file}"
+    fi
+    if [[ $savings -eq 0 ]]
+    then
+        /bin/echo "${file} is already compressed"
+        /bin/rm "${file}.optimized"
+    fi
+    if [[ $savings -lt 0 ]]
+    then
+        /bin/echo "Compressing ${file} did not work"
+        /bin/rm "${file}.optimized"
+    fi
+done
