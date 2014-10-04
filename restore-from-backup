@@ -325,7 +325,10 @@ def main():
     args.kernel = args.kernel or old_instance.kernel
     args.key_name = args.key_name or old_instance.key_name
     args.volume_type = args.volume_type or old_volume.type
-    args.volume_iops = args.volume_iops or old_volume.iops
+    if 'io1' == args.volume_type:
+        args.volume_iops = args.volume_iops or old_volume.iops
+    else:
+        args.volume_iops = None
     if None != args.security_groups:
         args.security_groups = string.split(args.security_groups, ',')
     else:
@@ -385,7 +388,7 @@ def main():
         ebs.size = args.size
         ebs.delete_on_termination = True
         ebs.iops = args.volume_iops        
-        ebs.type = args.volume_type        
+        ebs.volume_type = args.volume_type        
         block_map = BlockDeviceMapping()
         block_map['/dev/sda1'] = ebs
         add_ephemeral_drives_to_block_map(block_map)
@@ -523,7 +526,7 @@ def main():
     print_and_log('        Volume Status: {0}'.format(volume.status))
     print_and_log('          Volume Size: {0}'.format(volume.size))
     print_and_log('          Volume Type: {0}'.format(volume.type))
-    print_and_log('          Volume IOPS: {0}'.format(volume.iops))	
+    print_and_log('          Volume IOPS: {0}'.format(volume.iops))    
     print_and_log('          Volume Tags: {0}'.format(format_tags(retry(lambda: ec2.get_all_tags(filters={'resource-id': volume.id})))))
     print_and_log('Time: {0}'.format(time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())))
     
